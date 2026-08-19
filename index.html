@@ -799,13 +799,25 @@
 
                         <!-- Camera Input UI -->
                         <div class="bg-zinc-950/50 p-3 rounded-lg border border-zinc-800/50 flex flex-col gap-2">
-                            <label class="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">Live Camera /
-                                Mic</label>
+                            <label class="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">Live Camera / Mic</label>
+                            <div class="flex flex-col gap-1">
+                                <label class="text-[10px] text-zinc-400 font-medium">Camera</label>
+                                <select id="camera-select" class="w-full bg-zinc-900 border border-zinc-700 rounded px-2.5 py-1.5 text-xs text-zinc-300 focus:border-blue-500 outline-none">
+                                    <option value="">Detecting cameras...</option>
+                                </select>
+                            </div>
+                            <div class="flex flex-col gap-1">
+                                <label class="text-[10px] text-zinc-400 font-medium">Microphone</label>
+                                <select id="mic-select" class="w-full bg-zinc-900 border border-zinc-700 rounded px-2.5 py-1.5 text-xs text-zinc-300 focus:border-blue-500 outline-none">
+                                    <option value="">Detecting microphones...</option>
+                                </select>
+                            </div>
                             <button onclick="addCameraLayer()"
-                                class="w-full bg-emerald-600 text-white px-4 py-2 rounded hover:bg-emerald-500 text-sm font-semibold whitespace-nowrap flex items-center justify-center gap-2">
+                                class="w-full bg-emerald-600 text-white px-4 py-2 rounded hover:bg-emerald-500 text-sm font-semibold whitespace-nowrap flex items-center justify-center gap-2 mt-1">
                                 📹 + Add Live Camera / Mic
                             </button>
                         </div>
+
 
                         <!-- Text Layer -->
                         <div class="bg-zinc-950/50 p-3 rounded-lg border border-zinc-800/50 flex flex-col gap-2">
@@ -1413,7 +1425,85 @@
 
             startMediaSyncLoop();
             startHostFPSMonitor();
+            initDevices();
         }
+
+        async function updateDeviceList() {
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const cameraSelect = document.getElementById('camera-select');
+                const micSelect = document.getElementById('mic-select');
+                if (!cameraSelect || !micSelect) return;
+
+                cameraSelect.innerHTML = '';
+                micSelect.innerHTML = '';
+
+                let videoCount = 0;
+                let audioCount = 0;
+
+                devices.forEach(device => {
+                    if (device.kind === 'videoinput') {
+                        videoCount++;
+                        const option = document.createElement('option');
+                        option.value = device.deviceId;
+                        let label = device.label;
+                        if (!label) {
+                            label = `Camera ${videoCount}`;
+                        }
+                        
+                        const lowerLabel = label.toLowerCase();
+                        if (lowerLabel.includes('front') || lowerLabel.includes('user') || lowerLabel.includes('face')) {
+                            label += ' (Front Camera)';
+                        } else if (lowerLabel.includes('back') || lowerLabel.includes('environment') || lowerLabel.includes('rear') || lowerLabel.includes('main')) {
+                            label += ' (Back Camera)';
+                        }
+                        option.text = label;
+                        cameraSelect.appendChild(option);
+                    } else if (device.kind === 'audioinput') {
+                        audioCount++;
+                        const option = document.createElement('option');
+                        option.value = device.deviceId;
+                        option.text = device.label || `Microphone ${audioCount}`;
+                        micSelect.appendChild(option);
+                    }
+                });
+
+                if (videoCount === 0) {
+                    const option = document.createElement('option');
+                    option.text = "No cameras detected";
+                    option.value = "";
+                    cameraSelect.appendChild(option);
+                }
+                if (audioCount === 0) {
+                    const option = document.createElement('option');
+                    option.text = "No microphones detected";
+                    option.value = "";
+                    micSelect.appendChild(option);
+                }
+            } catch (err) {
+                console.error("Error updating devices:", err);
+            }
+        }
+
+        async function initDevices() {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                const cameraSelect = document.getElementById('camera-select');
+                const micSelect = document.getElementById('mic-select');
+                if (cameraSelect) cameraSelect.innerHTML = '<option value="">Not supported (Needs HTTPS/Localhost)</option>';
+                if (micSelect) micSelect.innerHTML = '<option value="">Not supported (Needs HTTPS/Localhost)</option>';
+                return;
+            }
+            try {
+                const tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                tempStream.getTracks().forEach(track => track.stop());
+                await updateDeviceList();
+                navigator.mediaDevices.ondevicechange = updateDeviceList;
+            } catch (e) {
+                console.warn("Initial permission prompt failed or denied:", e);
+                await updateDeviceList();
+            }
+        }
+
 
         function startHostFPSMonitor() {
             setInterval(() => {
@@ -1691,8 +1781,12 @@
                 return;
             }
 
-            // Force 1920x1080 Resolution Capture for Camera
-            navigator.mediaDevices.getUserMedia({
+            const cameraSelect = document.getElementById('camera-select');
+            const micSelect = document.getElementById('mic-select');
+            const videoDeviceId = cameraSelect ? cameraSelect.value : null;
+            const audioDeviceId = micSelect ? micSelect.value : null;
+
+            const constraints = {
                 video: {
                     width: { ideal: 1920 },
                     height: { ideal: 1080 },
@@ -1701,7 +1795,17 @@
                     frameRate: { ideal: 30, min: 30, max: 30 }
                 },
                 audio: true
-            }).then(stream => {
+            };
+
+            if (videoDeviceId) {
+                constraints.video.deviceId = { exact: videoDeviceId };
+            }
+            if (audioDeviceId) {
+                constraints.audio = { deviceId: { exact: audioDeviceId } };
+            }
+
+            // Force 1920x1080 Resolution Capture for Camera
+            navigator.mediaDevices.getUserMedia(constraints).then(stream => {
                 const layer = {
                     id: 'layer_' + Date.now(), type: 'camera', x: 960, y: 540, scale: 1, zIndex: window.getNextZIndex(),
                     audio: { volume: 1, muted: false }
@@ -1727,6 +1831,7 @@
                 alert("Camera access denied or unavailable.");
             });
         };
+
 
         window.createNewTextLayer = function () {
             const val = document.getElementById('new-text-val').value || 'LIVE TEXT';
