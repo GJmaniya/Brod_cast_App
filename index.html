@@ -142,6 +142,15 @@
             background: #52525b;
         }
 
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+
         .drag-over {
             border-color: #3b82f6 !important;
             background-color: rgba(59, 130, 246, 0.1) !important;
@@ -605,7 +614,8 @@
 
             <!-- RIGHT COLUMN: Media Hub & Properties -->
             <div
-                class="md:col-span-5 lg:col-span-4 flex flex-col gap-3 sm:gap-4 min-h-0 md:overflow-y-auto pr-0 md:pr-2">
+                class="md:col-span-5 lg:col-span-4 flex flex-col gap-3 sm:gap-4 min-h-0 md:overflow-y-auto pr-0 md:pr-2"
+                style="scrollbar-width: thin; scrollbar-color: #3f3f46 transparent;">
 
                 <!-- Properties Panel -->
                 <div id="properties-panel" class="bg-zinc-900 border border-zinc-800 rounded-xl p-5 shadow-lg hidden">
@@ -713,8 +723,7 @@
                 </div>
 
                 <!-- Media Input Hub -->
-                <div class="bg-zinc-900 border border-zinc-800 rounded-xl shadow-lg flex flex-col gap-0 relative overflow-hidden"
-                    style="max-height: 420px;">
+                <div class="bg-zinc-900 border border-zinc-800 rounded-xl shadow-lg flex flex-col gap-0 relative overflow-hidden shrink-0">
                     <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 to-indigo-500 z-10">
                     </div>
 
@@ -722,8 +731,7 @@
                         Layer</h2>
 
                     <!-- Scrollable content area -->
-                    <div class="overflow-y-auto flex flex-col gap-5 px-5 pb-5"
-                        style="scrollbar-width: thin; scrollbar-color: #3f3f46 transparent;">
+                    <div class="flex flex-col gap-5 px-5 pb-5">
 
                         <!-- Bitrate Mode Selection -->
                         <div class="bg-zinc-950/50 p-3 rounded-lg border border-zinc-800/50 flex flex-col gap-2">
@@ -843,14 +851,13 @@
                 </div> <!-- end Add New Layer card -->
 
                 <!-- Layer Stack Area -->
-                <div
-                    class="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex-1 flex flex-col min-h-[200px] overflow-hidden shadow-lg">
+                <div id="layer-stack-card"
+                    class="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex-1 flex flex-col min-h-[200px] overflow-hidden shadow-lg hidden">
                     <div class="flex justify-between items-center mb-3 shrink-0 border-b border-zinc-800 pb-2">
                         <h2 class="text-sm font-bold text-blue-400 uppercase tracking-wider">Layer Stack</h2>
                         <span class="text-xs text-zinc-500">#1 is shown in Program Monitor</span>
                     </div>
-                    <div id="layer-stack-container" class="flex-1 overflow-y-auto pr-2"
-                        style="scrollbar-width: thin; scrollbar-color: #3f3f46 transparent;">
+                    <div id="layer-stack-container" class="flex-1 overflow-y-auto no-scrollbar pr-2">
                         <!-- Stack items injected here -->
                         <div class="text-zinc-600 text-sm text-center mt-6">No layers active</div>
                     </div>
@@ -863,8 +870,7 @@
                     <div class="flex justify-between items-center mb-1">
                         <h2 class="text-sm font-bold text-zinc-100 uppercase tracking-wider">🎚️ Master Audio Mixer</h2>
                     </div>
-                    <div id="audio-mixer-container" class="flex flex-col gap-3 overflow-y-auto max-h-[250px]"
-                        style="scrollbar-width: thin; scrollbar-color: #3f3f46 transparent;">
+                    <div id="audio-mixer-container" class="flex flex-col gap-3 overflow-y-auto no-scrollbar max-h-[250px]">
                         <!-- Audio sliders injected here dynamically -->
                     </div>
                 </div>
@@ -1652,11 +1658,14 @@
 
             const sortedLayers = Object.values(window.layers).sort((a, b) => b.zIndex - a.zIndex);
 
+            const card = document.getElementById('layer-stack-card');
             if (sortedLayers.length === 0) {
+                if (card) card.classList.add('hidden');
                 container.innerHTML = '<div class="text-zinc-600 text-sm text-center mt-6">No layers active</div>';
                 updateProgramMonitor();
                 return;
             }
+            if (card) card.classList.remove('hidden');
 
             sortedLayers.forEach(layer => {
                 const item = document.createElement('div');
