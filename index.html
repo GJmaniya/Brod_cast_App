@@ -795,6 +795,9 @@
                                     class="flex-1 bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-500 text-sm font-semibold">+
                                     Add Link</button>
                             </div>
+                            <p class="text-[10px] text-zinc-500 mt-1">
+                                ⚠️ Note: Many sites (Canva, Google, etc.) block embedding in iframes due to security policies. Use <strong>Screen Share</strong> above if the page does not load.
+                            </p>
                         </div>
 
                         <!-- Camera Input UI -->
@@ -815,6 +818,10 @@
                             <button onclick="addCameraLayer()"
                                 class="w-full bg-emerald-600 text-white px-4 py-2 rounded hover:bg-emerald-500 text-sm font-semibold whitespace-nowrap flex items-center justify-center gap-2 mt-1">
                                 📹 + Add Live Camera / Mic
+                            </button>
+                            <button onclick="addScreenShareLayer()"
+                                class="w-full bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-500 text-sm font-semibold whitespace-nowrap flex items-center justify-center gap-2 mt-1">
+                                🖥️ + Add Screen / Window Share
                             </button>
                         </div>
 
@@ -1662,6 +1669,7 @@
 
                 let name = layer.type.toUpperCase();
                 if (layer.type === 'text') name += `: ${layer.content}`;
+                else if (layer.type === 'camera') name = layer.title || 'CAMERA';
                 else if (layer.src) name += `: ${layer.src.split('/').pop().substring(0, 20)}...`;
                 else name += ` Layer`;
 
@@ -1734,6 +1742,10 @@
             let src = document.getElementById('new-media-val').value.trim();
             if (!src) return;
 
+            if (/^www\./i.test(src)) {
+                src = 'https://' + src;
+            }
+
             let type = document.getElementById('new-media-type').value;
 
             if (type === 'auto') {
@@ -1744,6 +1756,10 @@
                     type = 'image';
                 } else if (lowerSrc.match(/\.(mp3|wav|ogg)(\?.*)?$/)) {
                     type = 'audio';
+                } else if (lowerSrc.match(/\.(mp4|webm|m4v|ogv|mov)(\?.*)?$/)) {
+                    type = 'video';
+                } else if (/^https?:\/\//i.test(src)) {
+                    type = 'iframe';
                 } else {
                     type = 'video';
                 }
@@ -1790,8 +1806,6 @@
                 video: {
                     width: { ideal: 1920 },
                     height: { ideal: 1080 },
-                    // FIX: Lock camera to exactly 30 FPS to match encoder target.
-                    // A mismatch causes the encoder to drop frames.
                     frameRate: { ideal: 30, min: 30, max: 30 }
                 },
                 audio: true
@@ -1829,6 +1843,44 @@
             }).catch(err => {
                 console.error(err);
                 alert("Camera access denied or unavailable.");
+            });
+        };
+
+        window.addScreenShareLayer = function () {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+                alert("Screen sharing requires a secure connection (HTTPS) or Localhost.");
+                return;
+            }
+
+            navigator.mediaDevices.getDisplayMedia({
+                video: {
+                    width: { ideal: 1920 },
+                    height: { ideal: 1080 }
+                },
+                audio: true
+            }).then(stream => {
+                const layer = {
+                    id: 'layer_' + Date.now(), type: 'camera', title: 'Screen Share', x: 960, y: 540, scale: 1, zIndex: window.getNextZIndex(),
+                    audio: { volume: 1, muted: false }
+                };
+                
+                stream.getVideoTracks().forEach(t => t.contentHint = 'detail');
+                
+                window.layers[layer.id] = layer;
+                window.localStreams[layer.id] = stream;
+
+                renderControllerLayer(layer.id);
+                renderLayerStack();
+                broadcastData({ type: 'ADD_LAYER', layer: layer });
+
+                // Establish Media Calls to all connected players
+                p2pConnections.forEach(conn => {
+                    const call = peer.call(conn.peer, stream, { metadata: { layerId: layer.id } });
+                    registerMediaCall(call);
+                });
+            }).catch(err => {
+                console.error(err);
+                alert("Screen share access denied or cancelled.");
             });
         };
 
@@ -2452,7 +2504,7 @@
                 if (layer.type === 'camera') icon = '📹';
 
                 let title = layer.src ? layer.src.split('/').pop().split('?')[0].substring(0, 20) : 'Stream';
-                if (layer.type === 'camera') title = 'Live Camera';
+                if (layer.type === 'camera') title = layer.title || 'Live Camera';
 
                 const row = document.createElement('div');
                 row.className = 'flex flex-col gap-1 bg-zinc-950/60 p-2 rounded border border-zinc-800/50';
