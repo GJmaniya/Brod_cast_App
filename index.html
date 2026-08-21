@@ -179,8 +179,13 @@
             white-space: nowrap;
         }
 
-        /* Prevents Tailwind defaults from compressing elements during drag */
-        .layer-element video,
+        .layer-element video {
+            object-fit: cover;
+            background: #000;
+            pointer-events: none;
+            max-width: none;
+            flex-shrink: 0;
+        }
         .layer-element img,
         .layer-element iframe {
             object-fit: contain;
@@ -514,7 +519,7 @@
         <!-- Header -->
         <header
             class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-zinc-900 p-3 sm:p-4 rounded-xl border border-zinc-800 shrink-0">
-            <div>
+            <div>   
                 <h1 class="text-lg sm:text-xl font-bold text-zinc-100 flex items-center gap-2 sm:gap-3">
                     <svg class="w-5 h-5 sm:w-6 sm:h-6 text-blue-500 shrink-0" fill="none" stroke="currentColor"
                         viewBox="0 0 24 24">
