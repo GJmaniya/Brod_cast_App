@@ -1761,12 +1761,15 @@
             }
 
             let type = document.getElementById('new-media-type').value;
+            const lowerSrc = src.toLowerCase();
+
+            // Automatically route YouTube and Vimeo links to 'iframe' even if 'video' or 'auto' was selected
+            if (lowerSrc.includes('youtube.com') || lowerSrc.includes('youtu.be') || lowerSrc.includes('vimeo.com')) {
+                type = 'iframe';
+            }
 
             if (type === 'auto') {
-                const lowerSrc = src.toLowerCase();
-                if (lowerSrc.includes('youtube.com') || lowerSrc.includes('youtu.be') || lowerSrc.includes('vimeo.com')) {
-                    type = 'iframe';
-                } else if (lowerSrc.match(/\.(jpeg|jpg|gif|png|webp)(\?.*)?$/)) {
+                if (lowerSrc.match(/\.(jpeg|jpg|gif|png|webp)(\?.*)?$/)) {
                     type = 'image';
                 } else if (lowerSrc.match(/\.(mp3|wav|ogg)(\?.*)?$/)) {
                     type = 'audio';
@@ -2227,6 +2230,8 @@
 
             if (id && window.layers[id]) {
                 const layer = window.layers[id];
+                const wrapper = document.getElementById('controller-preview-wrapper');
+                if (wrapper) wrapper.focus();
                 document.getElementById(`ctrl-${id}`).classList.add('selected');
                 document.getElementById('properties-panel').classList.remove('hidden');
                 document.getElementById('prop-scale').value = layer.scale.toFixed(2);
@@ -2726,14 +2731,21 @@
                 const scaleStep = e.shiftKey ? 0.1 : 0.02;
                 let changed = false;
 
-                switch (e.key) {
-                    case 'ArrowLeft': layer.x -= step; changed = true; break;
-                    case 'ArrowRight': layer.x += step; changed = true; break;
-                    case 'ArrowUp': layer.y -= step; changed = true; break;
-                    case 'ArrowDown': layer.y += step; changed = true; break;
-                    case '=': case '+': layer.scale += scaleStep; changed = true; break;
-                    case '-': case '_': layer.scale = Math.max(0.05, layer.scale - scaleStep); changed = true; break;
-                    case 'Delete': case 'Backspace': window.deleteSelectedLayer(); return;
+                if (e.altKey && (e.key === 'f' || e.key === 'F')) {
+                    layer.x = 960;
+                    layer.y = 540;
+                    layer.scale = 1;
+                    changed = true;
+                } else {
+                    switch (e.key) {
+                        case 'ArrowLeft': layer.x -= step; changed = true; break;
+                        case 'ArrowRight': layer.x += step; changed = true; break;
+                        case 'ArrowUp': layer.y -= step; changed = true; break;
+                        case 'ArrowDown': layer.y += step; changed = true; break;
+                        case '=': case '+': layer.scale += scaleStep; changed = true; break;
+                        case '-': case '_': layer.scale = Math.max(0.05, layer.scale - scaleStep); changed = true; break;
+                        case 'Delete': case 'Backspace': window.deleteSelectedLayer(); return;
+                    }
                 }
 
                 if (changed) {
