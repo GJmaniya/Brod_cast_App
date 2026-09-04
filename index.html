@@ -1596,12 +1596,13 @@
                             });
                         } else {
                             setP2PStatus('Remote Player Connected', 'text-emerald-400');
+                            // Always pre-establish WebRTC calls in background so stream is warm & ready instantly
+                            Object.keys(window.localStreams).forEach(layerId => {
+                                const call = peer.call(conn.peer, window.localStreams[layerId], { metadata: { layerId: layerId } });
+                                registerMediaCall(call);
+                            });
                             if (window.isOutputActive) {
                                 conn.send({ type: 'FULL_SYNC', layers: window.layers });
-                                Object.keys(window.localStreams).forEach(layerId => {
-                                    const call = peer.call(conn.peer, window.localStreams[layerId], { metadata: { layerId: layerId } });
-                                    registerMediaCall(call);
-                                });
                             } else {
                                 conn.send({ type: 'FULL_SYNC', layers: {} });
                             }
@@ -2353,9 +2354,6 @@
                 updateOutputControlUI();
             } else {
                 // LIVE STREAMING MODE FOR LOCAL VIDEO & AUDIO
-                layer.isBlob = true;
-                layer.mimeType = file.type;
-                layer.fileBlob = file;
                 layer.isStreamedMedia = true;
                 layer.src = URL.createObjectURL(file);
                 window.layers[layer.id] = layer;
@@ -2458,21 +2456,22 @@
                                 broadcastDataIfActive({ type: 'ADD_LAYER', layer: remoteLayer });
                             };
 
-                            // If media is already actively playing
-                            if (media.readyState >= 3 && !media.paused) {
+                            // If media is already ready to render
+                            if (media.readyState >= 2) {
                                 initStream();
                             } else {
-                                // Wait for it to ACTUALLY start playing frames
+                                // Wait for media readiness
+                                media.addEventListener('canplay', initStream, { once: true });
                                 media.addEventListener('playing', initStream, { once: true });
-                                // Fallback just in case
-                                setTimeout(initStream, 3000);
+                                // Short fallback just in case
+                                setTimeout(initStream, 300);
                             }
                         }
                     }
                 };
 
                 // Give the DOM a tiny tick to insert the element before querying it
-                setTimeout(startStreaming, 100);
+                setTimeout(startStreaming, 10);
             }
         }
 
@@ -3570,10 +3569,10 @@
                                 // FIX: Keep muted to bypass autoplay policy, restore later
                                 vid.muted = true;
 
-                                // Retry play() with backoff — stream data may not flow immediately
+                                // Retry play() with fast backoff — stream data flows instantly
                                 const tryPlay = (attempt) => {
                                     vid.play().catch(() => {
-                                        if (attempt < 8) setTimeout(() => tryPlay(attempt + 1), 500);
+                                        if (attempt < 12) setTimeout(() => tryPlay(attempt + 1), 100);
                                     });
                                 };
 
