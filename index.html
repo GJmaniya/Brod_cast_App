@@ -1012,31 +1012,54 @@
         window.localStreams = {};
         window.remoteStreams = {};
 
-        // PeerJS Config with NAT Traversal (STUN Servers) for Internet Connections
+        // PeerJS Config with NAT Traversal (STUN & TURN Servers) for Cross-Network Connections
         const peerConfig = {
             config: {
                 iceServers: [
                     { urls: 'stun:stun.l.google.com:19302' },
                     { urls: 'stun:stun1.l.google.com:19302' },
-                    { urls: 'stun:global.stun.twilio.com:3478' },
+                    { urls: 'stun:stun2.l.google.com:19302' },
+                    { urls: 'stun:stun3.l.google.com:19302' },
+                    { urls: 'stun:stun4.l.google.com:19302' },
+                    { urls: 'stun:stun.cloudflare.com:3478' },
+                    { urls: 'stun:stun.services.mozilla.com:3478' },
+                    { urls: 'stun:relay.metered.ca:80' },
+                    { urls: 'stun:relay.metered.ca:443' },
                     {
-                        urls: "turn:openrelay.metered.ca:80",
+                        urls: "turn:relay.metered.ca:80",
                         username: "openrelayproject",
                         credential: "openrelayproject"
                     },
                     {
-                        urls: "turn:openrelay.metered.ca:443",
+                        urls: "turn:relay.metered.ca:80?transport=udp",
                         username: "openrelayproject",
                         credential: "openrelayproject"
                     },
                     {
-                        urls: "turn:openrelay.metered.ca:443?transport=tcp",
+                        urls: "turn:relay.metered.ca:80?transport=tcp",
+                        username: "openrelayproject",
+                        credential: "openrelayproject"
+                    },
+                    {
+                        urls: "turn:relay.metered.ca:443",
+                        username: "openrelayproject",
+                        credential: "openrelayproject"
+                    },
+                    {
+                        urls: "turn:relay.metered.ca:443?transport=tcp",
+                        username: "openrelayproject",
+                        credential: "openrelayproject"
+                    },
+                    {
+                        urls: "turns:relay.metered.ca:443?transport=tcp",
                         username: "openrelayproject",
                         credential: "openrelayproject"
                     }
-                ]
+                ],
+                iceCandidatePoolSize: 10,
+                sdpSemantics: 'unified-plan'
             },
-            debug: 2
+            debug: 1
         };
 
         // Persistent Studio ID logic
@@ -1277,7 +1300,25 @@
             call.on('close', () => {
                 activeMediaCalls = activeMediaCalls.filter(c => c !== call);
                 if (call._fpsEnforceInterval) clearInterval(call._fpsEnforceInterval);
+                if (call._iceCheckTimeout) clearTimeout(call._iceCheckTimeout);
             });
+
+            // ICE connection state watchdog & auto-restart for cross-network reliability
+            const pc = call.peerConnection;
+            if (pc) {
+                pc.oniceconnectionstatechange = () => {
+                    if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+                        console.warn('[WebRTC Controller] ICE connection ' + pc.iceConnectionState + '. Restarting ICE...');
+                        if (typeof pc.restartIce === 'function') pc.restartIce();
+                    }
+                };
+                call._iceCheckTimeout = setTimeout(() => {
+                    if (pc && (pc.iceConnectionState === 'checking' || pc.iceConnectionState === 'new')) {
+                        console.warn('[WebRTC Controller] ICE candidate gathering taking long. Triggering ICE restart...');
+                        if (typeof pc.restartIce === 'function') pc.restartIce();
+                    }
+                }, 6000);
+            }
 
             const applyParams = () => {
                 const pc = call.peerConnection;
@@ -1578,6 +1619,11 @@
                                 if (playerFpsEl) playerFpsEl.innerText = msg.fps;
                                 const fpsMonitor = document.getElementById('fps-monitor');
                                 if (fpsMonitor) fpsMonitor.classList.remove('hidden');
+                            } else if (msg.type === 'REQUEST_STREAM_RECONNECT') {
+                                if (msg.layerId && window.localStreams[msg.layerId]) {
+                                    const call = peer.call(conn.peer, window.localStreams[msg.layerId], { metadata: { layerId: msg.layerId } });
+                                    registerMediaCall(call);
+                                }
                             }
                         }
                     });
@@ -2307,12 +2353,16 @@
                 updateOutputControlUI();
             } else {
                 // LIVE STREAMING MODE FOR LOCAL VIDEO & AUDIO
+                layer.isBlob = true;
+                layer.mimeType = file.type;
+                layer.fileBlob = file;
                 layer.isStreamedMedia = true;
                 layer.src = URL.createObjectURL(file);
                 window.layers[layer.id] = layer;
 
                 renderControllerLayer(layer.id);
                 renderLayerStack();
+                broadcastDataIfActive({ type: 'ADD_LAYER', layer: layer });
                 updateOutputControlUI();
 
                 // Wait for the HTML element to render and the media to be ready to play
@@ -3484,10 +3534,29 @@
                     window.activePlayerCalls.push(call);
                     call.on('close', () => {
                         window.activePlayerCalls = window.activePlayerCalls.filter(c => c !== call);
+                        if (call._iceCheckTimeout) clearTimeout(call._iceCheckTimeout);
                     });
 
+                    // Player side ICE connection watchdog & auto restart
+                    const pc = call.peerConnection;
+                    if (pc) {
+                        pc.oniceconnectionstatechange = () => {
+                            if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+                                console.warn('[WebRTC Player] ICE connection ' + pc.iceConnectionState + '. Restarting ICE...');
+                                if (typeof pc.restartIce === 'function') pc.restartIce();
+                            }
+                        };
+                        call._iceCheckTimeout = setTimeout(() => {
+                            if (pc && (pc.iceConnectionState === 'checking' || pc.iceConnectionState === 'new')) {
+                                console.warn('[WebRTC Player] ICE candidate gathering slow. Triggering ICE restart...');
+                                if (typeof pc.restartIce === 'function') pc.restartIce();
+                            }
+                        }, 6000);
+                    }
+
                     call.on('stream', remoteStream => {
-                        const layerId = call.metadata.layerId;
+                        const layerId = call.metadata ? call.metadata.layerId : null;
+                        if (!layerId) return;
                         window.remoteStreams = window.remoteStreams || {};
                         window.remoteStreams[layerId] = remoteStream;
 
@@ -3714,6 +3783,9 @@
                         vid.muted = true;
                         if (window.remoteStreams && window.remoteStreams[id]) {
                             vid.srcObject = window.remoteStreams[id];
+                        } else if (layer.src) {
+                            // Cross-network fallback: Use local Blob URL if WebRTC P2P stream is establishing or blocked
+                            vid.src = layer.src;
                         }
                         // Once playing, restore the real audio settings
                         vid.addEventListener('playing', () => {
