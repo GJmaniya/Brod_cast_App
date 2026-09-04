@@ -180,7 +180,7 @@
         }
 
         .layer-element video {
-            object-fit: cover;
+            object-fit: contain;
             background: #000;
             pointer-events: none;
             max-width: none;
@@ -794,7 +794,7 @@
                         </div>
 
                         <!-- WebRTC File Input UI -->
-                        <div id="mode-webrtc-ui">
+                        <div id="mode-webrtc-ui" class="space-y-2">
                             <div
                                 class="bg-zinc-950/50 p-3 rounded-lg border border-zinc-800/50 flex flex-col gap-2 text-center">
                                 <h3 class="text-sm font-bold text-zinc-200">Local File Stream</h3>
@@ -806,6 +806,37 @@
                                     Files</button>
                                 <input type="file" id="file-input" class="hidden" accept="image/*,video/*,audio/*"
                                     onchange="handleFileInput(event)">
+                            </div>
+
+                            <!-- FFmpeg Server Video Converter Tool -->
+                            <div class="bg-zinc-950/50 p-3 rounded-lg border border-indigo-500/30 flex flex-col gap-2 text-center relative overflow-hidden">
+                                <div class="flex items-center justify-between">
+                                    <h3 class="text-xs font-bold text-indigo-400 flex items-center gap-1.5">
+                                        <span>🎬</span> Video Converter & Auto-Fit (FFmpeg)
+                                    </h3>
+                                    <span class="bg-indigo-500/20 text-indigo-300 text-[9px] px-2 py-0.5 rounded font-mono">1080p 30FPS</span>
+                                </div>
+                                <p class="text-[10px] text-zinc-400 text-left">
+                                    Upload phone or laptop videos (`.mp4`, `.mov`, `.mkv`, etc.) to auto-rotate, fix aspect ratio, and output broadcast video.
+                                </p>
+                                <div class="flex gap-2 mt-1">
+                                    <button onclick="document.getElementById('converter-file-input').click()"
+                                        class="flex-1 bg-gradient-to-r from-indigo-600 to-blue-600 text-white px-3 py-2 rounded hover:from-indigo-500 hover:to-blue-500 text-xs font-semibold shadow-md transition-all">
+                                        ⚡ Convert & Auto-Fit Video
+                                    </button>
+                                    <input type="file" id="converter-file-input" class="hidden" accept="video/*"
+                                        onchange="if(this.files.length) convertAndAddVideo(this.files[0])">
+                                </div>
+
+                                <!-- Progress & Status Card -->
+                                <div id="converter-progress-card" class="hidden mt-2 p-2 bg-zinc-900 rounded border border-zinc-800 text-left">
+                                    <div class="flex justify-between items-center text-[11px] text-zinc-300 font-medium mb-1">
+                                        <span id="converter-status-text">Processing...</span>
+                                    </div>
+                                    <div class="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+                                        <div id="converter-progress-bar" class="bg-indigo-500 h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
 
@@ -946,6 +977,32 @@
         window.selectedLayerId = null;
         window.isOutputActive = false; // Program Monitor Output control flag
         let currentRoomId = '';
+
+        // Global Aspect-Fit helper function to prevent distorting/stretching vertical shorts or custom aspect ratios from phones/laptops
+        function drawVideoAspectFit(source, targetCtx, targetWidth, targetHeight) {
+            if (!source || !targetCtx) return;
+            const vW = source.videoWidth || (typeof source.width === 'number' && source.width > 0 ? source.width : 0);
+            const vH = source.videoHeight || (typeof source.height === 'number' && source.height > 0 ? source.height : 0);
+
+            targetCtx.fillStyle = '#000000';
+            targetCtx.fillRect(0, 0, targetWidth, targetHeight);
+
+            if (!vW || !vH) {
+                try {
+                    targetCtx.drawImage(source, 0, 0, targetWidth, targetHeight);
+                } catch (e) {}
+                return;
+            }
+
+            const scale = Math.min(targetWidth / vW, targetHeight / vH);
+            const drawW = vW * scale;
+            const drawH = vH * scale;
+            const drawX = (targetWidth - drawW) / 2;
+            const drawY = (targetHeight - drawH) / 2;
+
+            targetCtx.drawImage(source, drawX, drawY, drawW, drawH);
+        }
+        window.drawVideoAspectFit = drawVideoAspectFit;
 
         // P2P State
         let peer = null;
@@ -2157,6 +2214,73 @@
             };
         }
 
+        // Video Converter Server Integration (video_converter_server.js)
+        async function convertAndAddVideo(file) {
+            if (!file) return;
+            const progressCard = document.getElementById('converter-progress-card');
+            const progressBar = document.getElementById('converter-progress-bar');
+            const statusText = document.getElementById('converter-status-text');
+
+            if (progressCard) progressCard.classList.remove('hidden');
+            if (statusText) statusText.innerText = `Uploading & converting "${file.name}"...`;
+            if (progressBar) {
+                progressBar.style.background = '#6366f1';
+                progressBar.style.width = '25%';
+            }
+
+            const formData = new FormData();
+            formData.append('video', file);
+
+            try {
+                const response = await fetch('/convert', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    throw new Error('Conversion server error or offline');
+                }
+
+                if (progressBar) progressBar.style.width = '75%';
+                if (statusText) statusText.innerText = 'Finalizing 1080p broadcast video...';
+
+                const blob = await response.blob();
+                const convertedFile = new File([blob], `converted_${file.name}`, { type: 'video/mp4' });
+
+                if (progressBar) progressBar.style.width = '100%';
+                if (statusText) statusText.innerText = 'Conversion complete! Video added to canvas.';
+
+                // Automatically add converted video layer to canvas
+                processLocalFileBlob(convertedFile);
+
+                // Trigger browser file download prompt
+                const downloadUrl = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = downloadUrl;
+                a.download = `converted_${file.name.replace(/\.[^/.]+$/, "")}.mp4`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+
+                setTimeout(() => {
+                    if (progressCard) progressCard.classList.add('hidden');
+                }, 4000);
+            } catch (err) {
+                console.warn('Server converter unavailable, falling back to local player aspect-fit:', err);
+                if (statusText) statusText.innerText = `Server offline. Added video with instant client aspect-fit.`;
+                if (progressBar) {
+                    progressBar.style.width = '100%';
+                    progressBar.style.background = '#3b82f6';
+                }
+                // Fallback to local file processing with client drawVideoAspectFit
+                processLocalFileBlob(file);
+                setTimeout(() => {
+                    if (progressCard) progressCard.classList.add('hidden');
+                }, 4000);
+            }
+        }
+        window.convertAndAddVideo = convertAndAddVideo;
+
         // Handles dragged local files. Streams Video/Audio via WebRTC, sends Images as Blobs.
         function processLocalFileBlob(file, x = 960, y = 540) {
             let type = 'image';
@@ -2212,9 +2336,27 @@
                                     renderCanvas.height = 1080;
                                     const ctx = renderCanvas.getContext('2d', { alpha: false });
 
+                                    // Aspect-Fit helper function to prevent distorting/stretching vertical shorts or custom aspect ratios
+                                    function drawVideoAspectFit(source, targetCtx, targetWidth, targetHeight) {
+                                        const vW = source.videoWidth || (typeof source.width === 'number' && source.width > 0 ? source.width : 0);
+                                        const vH = source.videoHeight || (typeof source.height === 'number' && source.height > 0 ? source.height : 0);
+                                        if (!vW || !vH) return;
+
+                                        const scale = Math.min(targetWidth / vW, targetHeight / vH);
+                                        const drawW = vW * scale;
+                                        const drawH = vH * scale;
+                                        const drawX = (targetWidth - drawW) / 2;
+                                        const drawY = (targetHeight - drawH) / 2;
+
+                                        targetCtx.fillStyle = '#000000';
+                                        targetCtx.fillRect(0, 0, targetWidth, targetHeight);
+                                        targetCtx.drawImage(source, drawX, drawY, drawW, drawH);
+                                    }
+                                    window.drawVideoAspectFit = drawVideoAspectFit;
+
                                     const drawLoop = () => {
                                         if (media.readyState >= 2 && !media.paused && !media.ended) {
-                                            ctx.drawImage(media, 0, 0, 1920, 1080);
+                                            drawVideoAspectFit(media, ctx, 1920, 1080);
                                         }
                                         if (window.layers[layer.id]) {
                                             requestAnimationFrame(drawLoop);
@@ -3182,7 +3324,7 @@
                 if (!entry || !entry.active) return;
                 // Only draw if canvas mode is needed (below 1080p)
                 if (isCanvasModeNeeded() && !sourceVideo.paused && !sourceVideo.ended && sourceVideo.readyState >= 2) {
-                    ctx.drawImage(sourceVideo, 0, 0, displayCanvas.width, displayCanvas.height);
+                    window.drawVideoAspectFit(sourceVideo, ctx, displayCanvas.width, displayCanvas.height);
                 }
                 requestAnimationFrame(drawFrame);
             }
@@ -3218,7 +3360,7 @@
                         function drawFrame() {
                             if (!entry.active || !window._qualityCanvases[id]) return;
                             if (isCanvasModeNeeded() && !entry.source.paused && !entry.source.ended && entry.source.readyState >= 2) {
-                                entry.ctx.drawImage(entry.source, 0, 0, entry.canvas.width, entry.canvas.height);
+                                window.drawVideoAspectFit(entry.source, entry.ctx, entry.canvas.width, entry.canvas.height);
                             }
                             requestAnimationFrame(drawFrame);
                         }
