@@ -934,7 +934,22 @@
         window.localStreams = {};
         window.remoteStreams = {};
 
-        // PeerJS Config with NAT Traversal (STUN Servers) for Internet Connections
+        // ==========================================
+        // TURN CREDENTIALS — REPLACE THESE
+        // ==========================================
+        // The old "openrelayproject/openrelayproject" login is a PUBLIC, SHARED
+        // free TURN credential (used by thousands of unrelated apps worldwide).
+        // It has no fixed uptime/quota guarantee and can silently stop working
+        // for everyone at any time — that's why cross-network calls broke
+        // suddenly with no code change on your side.
+        //
+        // Fix: sign up for a FREE account at https://www.metered.ca/tools/openrelay
+        // (or any other TURN provider) and paste YOUR OWN unique
+        // username/credential below. Free tier = 20 GB/month, private to you.
+        const TURN_USERNAME = "PASTE_YOUR_METERED_USERNAME_HERE";
+        const TURN_CREDENTIAL = "PASTE_YOUR_METERED_CREDENTIAL_HERE";
+
+        // PeerJS Config with NAT Traversal (STUN + TURN Servers) for Internet Connections
         const peerConfig = {
             config: {
                 iceServers: [
@@ -942,12 +957,24 @@
                     { urls: 'stun:stun1.l.google.com:19302' },
                     { urls: 'stun:global.stun.twilio.com:3478' },
                     {
-                        urls: "turn:openrelay.metered.ca:80",
-                        username: "openrelayproject",
-                        credential: "openrelayproject"
+                        urls: "turn:global.relay.metered.ca:80",
+                        username: TURN_USERNAME,
+                        credential: TURN_CREDENTIAL
                     },
                     {
-                        urls: "turn:openrelay.metered.ca:443",
+                        urls: "turn:global.relay.metered.ca:443",
+                        username: TURN_USERNAME,
+                        credential: TURN_CREDENTIAL
+                    },
+                    {
+                        urls: "turn:global.relay.metered.ca:443?transport=tcp",
+                        username: TURN_USERNAME,
+                        credential: TURN_CREDENTIAL
+                    },
+                    // Old public/shared TURN kept ONLY as a last-resort fallback.
+                    // Do not rely on this — it is unreliable (see note above).
+                    {
+                        urls: "turn:openrelay.metered.ca:80",
                         username: "openrelayproject",
                         credential: "openrelayproject"
                     },
@@ -960,6 +987,27 @@
             },
             debug: 2
         };
+
+        // ==========================================
+        // ICE CONNECTION DEBUG / STATUS HELPER
+        // ==========================================
+        // Attaches a listener that logs the real ICE connection state to the
+        // console AND (for the Player) shows an on-screen banner instead of a
+        // silent black screen when the media relay fails to connect.
+        function attachIceDebug(call, label) {
+            const tryAttach = () => {
+                const pc = call.peerConnection;
+                if (!pc) { setTimeout(tryAttach, 200); return; }
+                pc.oniceconnectionstatechange = () => {
+                    const state = pc.iceConnectionState;
+                    console.log(`[ICE:${label}] state = ${state}`);
+                    if (typeof window.onIceStateChange === 'function') {
+                        window.onIceStateChange(state, label);
+                    }
+                };
+            };
+            tryAttach();
+        }
 
         // Persistent Studio ID logic
         function getStudioId() {
@@ -1114,6 +1162,7 @@
         window.lastSelectedQuality = 1080;
 
         function registerMediaCall(call) {
+            attachIceDebug(call, 'outgoing-' + (call.metadata ? call.metadata.layerId : call.peer));
             activeMediaCalls.push(call);
             call.on('close', () => {
                 activeMediaCalls = activeMediaCalls.filter(c => c !== call);
@@ -1358,6 +1407,7 @@
                     // Answer media calls from other controllers
                     peer.on('call', call => {
                         call.answer();
+                        attachIceDebug(call, 'incoming-controller-' + (call.metadata ? call.metadata.layerId : call.peer));
                         window.activeMediaCalls = window.activeMediaCalls || [];
                         window.activeMediaCalls.push(call);
                         call.on('close', () => {
@@ -3205,12 +3255,34 @@
                 });
             }
 
+            // Show a visible banner instead of a silent black screen when the
+            // media relay (TURN) fails — helps you tell "no connection" apart
+            // from "connected but frozen/black".
+            window.onIceStateChange = function (state, label) {
+                let banner = document.getElementById('ice-status-banner');
+                if (!banner) {
+                    banner = document.createElement('div');
+                    banner.id = 'ice-status-banner';
+                    banner.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:99999;padding:8px 16px;border-radius:8px;font-family:Inter,sans-serif;font-size:13px;font-weight:600;display:none;';
+                    document.body.appendChild(banner);
+                }
+                if (state === 'failed' || state === 'disconnected') {
+                    banner.textContent = '⚠ Media relay connection ' + state + ' (' + label + ') — check TURN server credentials';
+                    banner.style.background = '#7f1d1d';
+                    banner.style.color = '#fecaca';
+                    banner.style.display = 'block';
+                } else if (state === 'connected' || state === 'completed') {
+                    banner.style.display = 'none';
+                }
+            };
+
             peer = new Peer(peerConfig);
 
             peer.on('open', () => {
                 // Receive incoming Camera Streams & Streamed Files from Host
                 peer.on('call', call => {
                     call.answer();
+                    attachIceDebug(call, 'incoming-player-' + (call.metadata ? call.metadata.layerId : call.peer));
 
                     window.activePlayerCalls = window.activePlayerCalls || [];
                     window.activePlayerCalls.push(call);
