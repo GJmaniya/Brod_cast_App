@@ -180,7 +180,7 @@
         }
 
         .layer-element video {
-            object-fit: contain;
+            object-fit: cover;
             background: #000;
             pointer-events: none;
             max-width: none;
@@ -612,26 +612,6 @@
                             class="absolute inset-0 border-2 border-transparent group-focus:border-blue-500 pointer-events-none transition-colors z-20">
                         </div>
                     </div>
-
-                    <!-- Program Monitor Controls (Start / Stop Output to Player) -->
-                    <div id="program-monitor-controls" class="mt-3 flex flex-wrap items-center justify-between gap-3 bg-zinc-950/80 p-3 rounded-lg border border-zinc-800 shrink-0">
-                        <div class="flex items-center gap-3">
-                            <button id="btn-start-output" onclick="window.startPlayerOutput()"
-                                class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold rounded-lg shadow-lg shadow-emerald-900/40 flex items-center gap-2 transition-all text-sm cursor-pointer border border-emerald-500/50">
-                                <span class="text-base">▶</span>
-                                <span id="btn-start-output-text">Program Monitor Start</span>
-                            </button>
-                            <button id="btn-stop-output" onclick="window.stopPlayerOutput()"
-                                class="hidden px-4 py-2.5 bg-rose-900/60 hover:bg-rose-800 text-rose-200 font-bold rounded-lg border border-rose-700/50 items-center gap-2 transition-all text-sm cursor-pointer">
-                                <span>⏹</span>
-                                <span>Stop Output</span>
-                            </button>
-                        </div>
-                        <div id="output-status-container" class="flex items-center gap-2 text-xs font-semibold">
-                            <span id="output-status-dot" class="w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse"></span>
-                            <span id="output-status-text" class="text-amber-400">Output Standby (Click 'Program Monitor Start' to send to Player)</span>
-                        </div>
-                    </div>
                 </div>
 
 
@@ -944,7 +924,6 @@
         // Global State
         window.layers = {};
         window.selectedLayerId = null;
-        window.isOutputActive = false; // Program Monitor Output control flag
         let currentRoomId = '';
 
         // P2P State
@@ -1115,88 +1094,8 @@
             });
         }
 
-        function broadcastDataIfActive(data) {
-            if (window.isOutputActive) {
-                broadcastData(data);
-            }
-        }
-
-        window.startPlayerOutput = function () {
-            window.isOutputActive = true;
-            updateOutputControlUI();
-
-            // Broadcast FULL_SYNC to all player connections
-            broadcastData({ type: 'FULL_SYNC', layers: window.layers });
-
-            // Establish WebRTC calls for any active local streams (camera, screen share, video/audio stream)
-            p2pConnections.forEach(conn => {
-                if (!conn.metadata || !conn.metadata.isController) {
-                    Object.keys(window.localStreams).forEach(layerId => {
-                        if (window.localStreams[layerId]) {
-                            const call = peer.call(conn.peer, window.localStreams[layerId], { metadata: { layerId: layerId } });
-                            registerMediaCall(call);
-                        }
-                    });
-                }
-            });
-        };
-
-        window.stopPlayerOutput = function () {
-            window.isOutputActive = false;
-            updateOutputControlUI();
-
-            // Send empty FULL_SYNC to clear player side
-            broadcastData({ type: 'FULL_SYNC', layers: {} });
-        };
-
-        function updateOutputControlUI() {
-            const startBtn = document.getElementById('btn-start-output');
-            const stopBtn = document.getElementById('btn-stop-output');
-            const startBtnText = document.getElementById('btn-start-output-text');
-            const dot = document.getElementById('output-status-dot');
-            const text = document.getElementById('output-status-text');
-
-            if (!startBtn) return;
-
-            const hasLayers = Object.keys(window.layers).length > 0;
-
-            if (window.isOutputActive) {
-                startBtn.className = 'px-5 py-2.5 bg-emerald-700 text-white font-bold rounded-lg shadow-lg flex items-center gap-2 text-sm cursor-pointer border border-emerald-400';
-                if (startBtnText) startBtnText.innerText = '🟢 Output Live';
-                if (stopBtn) {
-                    stopBtn.classList.remove('hidden');
-                    stopBtn.classList.add('flex');
-                }
-                if (dot) {
-                    dot.className = 'w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse';
-                }
-                if (text) {
-                    text.className = 'text-red-400 font-bold';
-                    text.innerText = '🔴 LIVE ON PLAYER';
-                }
-            } else {
-                startBtn.className = hasLayers
-                    ? 'px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold rounded-lg shadow-lg shadow-emerald-900/40 flex items-center gap-2 transition-all text-sm cursor-pointer border border-emerald-400 animate-pulse'
-                    : 'px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold rounded-lg shadow-lg shadow-emerald-900/40 flex items-center gap-2 transition-all text-sm cursor-pointer border border-emerald-500/50';
-                if (startBtnText) startBtnText.innerText = 'Program Monitor Start';
-                if (stopBtn) {
-                    stopBtn.classList.add('hidden');
-                    stopBtn.classList.remove('flex');
-                }
-                if (dot) {
-                    dot.className = 'w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse';
-                }
-                if (text) {
-                    text.className = 'text-amber-400';
-                    text.innerText = hasLayers
-                        ? 'Media ready in Program Monitor (Click Start to send to Player)'
-                        : 'Output Standby (Click Program Monitor Start to send to Player)';
-                }
-            }
-        }
-
         window.sendGlobalCommand = function (cmd) {
-            broadcastDataIfActive({ type: 'COMMAND', command: cmd });
+            broadcastData({ type: 'COMMAND', command: cmd });
             if (cmd === 'CLEAR_ALL') {
                 Object.keys(window.localStreams).forEach(id => {
                     window.localStreams[id].getTracks().forEach(t => t.stop());
@@ -1204,10 +1103,9 @@
                 window.layers = {};
                 window.localStreams = {};
                 document.getElementById('controller-preview-canvas').innerHTML = '';
-                broadcastDataIfActive({ type: 'FULL_SYNC', layers: window.layers });
+                broadcastData({ type: 'FULL_SYNC', layers: window.layers });
                 selectLayer(null);
                 renderLayerStack();
-                updateOutputControlUI();
             }
         };
 
@@ -1386,7 +1284,6 @@
             setupInteractiveCanvas();
             setupPropertiesPanelListeners();
             setupDragAndDrop();
-            updateOutputControlUI();
 
             const processIncomingLayer = (layer) => {
                 if (layer.isBlob && layer.fileBlob) {
@@ -1498,15 +1395,11 @@
                             });
                         } else {
                             setP2PStatus('Remote Player Connected', 'text-emerald-400');
-                            if (window.isOutputActive) {
-                                conn.send({ type: 'FULL_SYNC', layers: window.layers });
-                                Object.keys(window.localStreams).forEach(layerId => {
-                                    const call = peer.call(conn.peer, window.localStreams[layerId], { metadata: { layerId: layerId } });
-                                    registerMediaCall(call);
-                                });
-                            } else {
-                                conn.send({ type: 'FULL_SYNC', layers: {} });
-                            }
+                            conn.send({ type: 'FULL_SYNC', layers: window.layers });
+                            Object.keys(window.localStreams).forEach(layerId => {
+                                const call = peer.call(conn.peer, window.localStreams[layerId], { metadata: { layerId: layerId } });
+                                registerMediaCall(call);
+                            });
                         }
                     });
 
@@ -1995,8 +1888,7 @@
             window.layers[layer.id] = layer;
             renderControllerLayer(layer.id);
             renderLayerStack();
-            broadcastDataIfActive({ type: 'ADD_LAYER', layer: layer });
-            updateOutputControlUI();
+            broadcastData({ type: 'ADD_LAYER', layer: layer });
             document.getElementById('new-media-val').value = '';
         };
 
@@ -2043,18 +1935,13 @@
 
                 renderControllerLayer(layer.id);
                 renderLayerStack();
-                broadcastDataIfActive({ type: 'ADD_LAYER', layer: layer });
-                updateOutputControlUI();
+                broadcastData({ type: 'ADD_LAYER', layer: layer });
 
-                // Establish Media Calls if output is active
-                if (window.isOutputActive) {
-                    p2pConnections.forEach(conn => {
-                        if (!conn.metadata || !conn.metadata.isController) {
-                            const call = peer.call(conn.peer, stream, { metadata: { layerId: layer.id } });
-                            registerMediaCall(call);
-                        }
-                    });
-                }
+                // Establish Media Calls to all connected players
+                p2pConnections.forEach(conn => {
+                    const call = peer.call(conn.peer, stream, { metadata: { layerId: layer.id } });
+                    registerMediaCall(call);
+                });
             }).catch(err => {
                 console.error(err);
                 alert("Camera access denied or unavailable.");
@@ -2086,18 +1973,13 @@
 
                 renderControllerLayer(layer.id);
                 renderLayerStack();
-                broadcastDataIfActive({ type: 'ADD_LAYER', layer: layer });
-                updateOutputControlUI();
+                broadcastData({ type: 'ADD_LAYER', layer: layer });
 
-                // Establish Media Calls if output is active
-                if (window.isOutputActive) {
-                    p2pConnections.forEach(conn => {
-                        if (!conn.metadata || !conn.metadata.isController) {
-                            const call = peer.call(conn.peer, stream, { metadata: { layerId: layer.id } });
-                            registerMediaCall(call);
-                        }
-                    });
-                }
+                // Establish Media Calls to all connected players
+                p2pConnections.forEach(conn => {
+                    const call = peer.call(conn.peer, stream, { metadata: { layerId: layer.id } });
+                    registerMediaCall(call);
+                });
             }).catch(err => {
                 console.error(err);
                 alert("Screen share access denied or cancelled.");
@@ -2114,8 +1996,7 @@
             window.layers[layer.id] = layer;
             renderControllerLayer(layer.id);
             renderLayerStack();
-            broadcastDataIfActive({ type: 'ADD_LAYER', layer: layer });
-            updateOutputControlUI();
+            broadcastData({ type: 'ADD_LAYER', layer: layer });
             document.getElementById('new-text-val').value = '';
         };
 
@@ -2179,8 +2060,7 @@
 
                 renderControllerLayer(layer.id);
                 renderLayerStack();
-                broadcastDataIfActive({ type: 'ADD_LAYER', layer: layer });
-                updateOutputControlUI();
+                broadcastData({ type: 'ADD_LAYER', layer: layer });
             } else {
                 // LIVE STREAMING MODE FOR LOCAL VIDEO & AUDIO
                 layer.isStreamedMedia = true;
@@ -2189,7 +2069,6 @@
 
                 renderControllerLayer(layer.id);
                 renderLayerStack();
-                updateOutputControlUI();
 
                 // Wait for the HTML element to render and the media to be ready to play
                 // Calling captureStream BEFORE the media is actually playing creates a permanently dead stream in Chrome.
@@ -2212,25 +2091,9 @@
                                     renderCanvas.height = 1080;
                                     const ctx = renderCanvas.getContext('2d', { alpha: false });
 
-                                    // Aspect-Fit helper function to prevent distorting/stretching vertical shorts or custom aspect ratios
-                                    function drawVideoAspectFit(source, targetCtx, targetWidth, targetHeight) {
-                                        const vW = (source.videoWidth || source.width) || targetWidth;
-                                        const vH = (source.videoHeight || source.height) || targetHeight;
-                                        const scale = Math.min(targetWidth / vW, targetHeight / vH);
-                                        const drawW = vW * scale;
-                                        const drawH = vH * scale;
-                                        const drawX = (targetWidth - drawW) / 2;
-                                        const drawY = (targetHeight - drawH) / 2;
-
-                                        targetCtx.fillStyle = '#000000';
-                                        targetCtx.fillRect(0, 0, targetWidth, targetHeight);
-                                        targetCtx.drawImage(source, drawX, drawY, drawW, drawH);
-                                    }
-                                    window.drawVideoAspectFit = drawVideoAspectFit;
-
                                     const drawLoop = () => {
                                         if (media.readyState >= 2 && !media.paused && !media.ended) {
-                                            drawVideoAspectFit(media, ctx, 1920, 1080);
+                                            ctx.drawImage(media, 0, 0, 1920, 1080);
                                         }
                                         if (window.layers[layer.id]) {
                                             requestAnimationFrame(drawLoop);
@@ -2266,20 +2129,16 @@
                                     });
 
                                     window.localStreams[layer.id] = finalStream;
-                                    if (window.isOutputActive) {
-                                        p2pConnections.forEach(conn => {
-                                            if (!conn.metadata || !conn.metadata.isController) {
-                                                const call = peer.call(conn.peer, finalStream, { metadata: { layerId: layer.id } });
-                                                registerMediaCall(call);
-                                            }
-                                        });
-                                    }
+                                    p2pConnections.forEach(conn => {
+                                        const call = peer.call(conn.peer, finalStream, { metadata: { layerId: layer.id } });
+                                        registerMediaCall(call);
+                                    });
                                 }
 
                                 // Broadcast layer instruction to remote player (without the local URL)
                                 const remoteLayer = { ...layer };
                                 delete remoteLayer.src;
-                                broadcastDataIfActive({ type: 'ADD_LAYER', layer: remoteLayer });
+                                broadcastData({ type: 'ADD_LAYER', layer: remoteLayer });
                             };
 
                             // If media is already actively playing
@@ -3091,8 +2950,8 @@
             renderLayerStack();
 
             // Broadcast both changes to the remote player
-            broadcastDataIfActive({ type: 'UPDATE_LAYER', id: layerA.id, changes: { zIndex: layerA.zIndex } });
-            broadcastDataIfActive({ type: 'UPDATE_LAYER', id: layerB.id, changes: { zIndex: layerB.zIndex } });
+            broadcastData({ type: 'UPDATE_LAYER', id: layerA.id, changes: { zIndex: layerA.zIndex } });
+            broadcastData({ type: 'UPDATE_LAYER', id: layerB.id, changes: { zIndex: layerB.zIndex } });
         };
 
         window.changeLayerZ = function (direction) {
@@ -3110,11 +2969,10 @@
             }
 
             delete window.layers[id];
-            broadcastDataIfActive({ type: 'REMOVE_LAYER', id: id });
+            broadcastData({ type: 'REMOVE_LAYER', id: id });
 
             if (window.selectedLayerId === id) selectLayer(null);
             else renderLayerStack();
-            updateOutputControlUI();
         };
 
         window.deleteSelectedLayer = function () {
@@ -3198,11 +3056,7 @@
                 if (!entry || !entry.active) return;
                 // Only draw if canvas mode is needed (below 1080p)
                 if (isCanvasModeNeeded() && !sourceVideo.paused && !sourceVideo.ended && sourceVideo.readyState >= 2) {
-                    if (window.drawVideoAspectFit) {
-                        window.drawVideoAspectFit(sourceVideo, ctx, displayCanvas.width, displayCanvas.height);
-                    } else {
-                        ctx.drawImage(sourceVideo, 0, 0, displayCanvas.width, displayCanvas.height);
-                    }
+                    ctx.drawImage(sourceVideo, 0, 0, displayCanvas.width, displayCanvas.height);
                 }
                 requestAnimationFrame(drawFrame);
             }
@@ -3238,11 +3092,7 @@
                         function drawFrame() {
                             if (!entry.active || !window._qualityCanvases[id]) return;
                             if (isCanvasModeNeeded() && !entry.source.paused && !entry.source.ended && entry.source.readyState >= 2) {
-                                if (window.drawVideoAspectFit) {
-                                    window.drawVideoAspectFit(entry.source, entry.ctx, entry.canvas.width, entry.canvas.height);
-                                } else {
-                                    entry.ctx.drawImage(entry.source, 0, 0, entry.canvas.width, entry.canvas.height);
-                                }
+                                entry.ctx.drawImage(entry.source, 0, 0, entry.canvas.width, entry.canvas.height);
                             }
                             requestAnimationFrame(drawFrame);
                         }
