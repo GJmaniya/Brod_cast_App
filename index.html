@@ -794,7 +794,7 @@
                         </div>
 
                         <!-- WebRTC File Input UI -->
-                        <div id="mode-webrtc-ui" class="space-y-2">
+                        <div id="mode-webrtc-ui">
                             <div
                                 class="bg-zinc-950/50 p-3 rounded-lg border border-zinc-800/50 flex flex-col gap-2 text-center">
                                 <h3 class="text-sm font-bold text-zinc-200">Local File Stream</h3>
@@ -806,37 +806,6 @@
                                     Files</button>
                                 <input type="file" id="file-input" class="hidden" accept="image/*,video/*,audio/*"
                                     onchange="handleFileInput(event)">
-                            </div>
-
-                            <!-- FFmpeg Server Video Converter Tool -->
-                            <div class="bg-zinc-950/50 p-3 rounded-lg border border-indigo-500/30 flex flex-col gap-2 text-center relative overflow-hidden">
-                                <div class="flex items-center justify-between">
-                                    <h3 class="text-xs font-bold text-indigo-400 flex items-center gap-1.5">
-                                        <span>🎬</span> Video Converter & Auto-Fit (FFmpeg)
-                                    </h3>
-                                    <span class="bg-indigo-500/20 text-indigo-300 text-[9px] px-2 py-0.5 rounded font-mono">1080p 30FPS</span>
-                                </div>
-                                <p class="text-[10px] text-zinc-400 text-left">
-                                    Upload phone or laptop videos (`.mp4`, `.mov`, `.mkv`, etc.) to auto-rotate, fix aspect ratio, and output broadcast video.
-                                </p>
-                                <div class="flex gap-2 mt-1">
-                                    <button onclick="document.getElementById('converter-file-input').click()"
-                                        class="flex-1 bg-gradient-to-r from-indigo-600 to-blue-600 text-white px-3 py-2 rounded hover:from-indigo-500 hover:to-blue-500 text-xs font-semibold shadow-md transition-all">
-                                        ⚡ Convert & Auto-Fit Video
-                                    </button>
-                                    <input type="file" id="converter-file-input" class="hidden" accept="video/*"
-                                        onchange="if(this.files.length) convertAndAddVideo(this.files[0])">
-                                </div>
-
-                                <!-- Progress & Status Card -->
-                                <div id="converter-progress-card" class="hidden mt-2 p-2 bg-zinc-900 rounded border border-zinc-800 text-left">
-                                    <div class="flex justify-between items-center text-[11px] text-zinc-300 font-medium mb-1">
-                                        <span id="converter-status-text">Processing...</span>
-                                    </div>
-                                    <div class="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
-                                        <div id="converter-progress-bar" class="bg-indigo-500 h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
-                                    </div>
-                                </div>
                             </div>
                         </div>
 
@@ -978,32 +947,6 @@
         window.isOutputActive = false; // Program Monitor Output control flag
         let currentRoomId = '';
 
-        // Global Aspect-Fit helper function to prevent distorting/stretching vertical shorts or custom aspect ratios from phones/laptops
-        function drawVideoAspectFit(source, targetCtx, targetWidth, targetHeight) {
-            if (!source || !targetCtx) return;
-            const vW = source.videoWidth || (typeof source.width === 'number' && source.width > 0 ? source.width : 0);
-            const vH = source.videoHeight || (typeof source.height === 'number' && source.height > 0 ? source.height : 0);
-
-            targetCtx.fillStyle = '#000000';
-            targetCtx.fillRect(0, 0, targetWidth, targetHeight);
-
-            if (!vW || !vH) {
-                try {
-                    targetCtx.drawImage(source, 0, 0, targetWidth, targetHeight);
-                } catch (e) {}
-                return;
-            }
-
-            const scale = Math.min(targetWidth / vW, targetHeight / vH);
-            const drawW = vW * scale;
-            const drawH = vH * scale;
-            const drawX = (targetWidth - drawW) / 2;
-            const drawY = (targetHeight - drawH) / 2;
-
-            targetCtx.drawImage(source, drawX, drawY, drawW, drawH);
-        }
-        window.drawVideoAspectFit = drawVideoAspectFit;
-
         // P2P State
         let peer = null;
         let p2pConnections = [];
@@ -1012,24 +955,15 @@
         window.localStreams = {};
         window.remoteStreams = {};
 
-        // PeerJS Config with Dynamic STUN & TURN Servers for Hosted Cross-Network P2P
+        // PeerJS Config with NAT Traversal (STUN Servers) for Internet Connections
         const peerConfig = {
             config: {
                 iceServers: [
                     { urls: 'stun:stun.l.google.com:19302' },
                     { urls: 'stun:stun1.l.google.com:19302' },
-                    { urls: 'stun:stun2.l.google.com:19302' },
-                    { urls: 'stun:stun3.l.google.com:19302' },
-                    { urls: 'stun:stun4.l.google.com:19302' },
-                    { urls: 'stun:stun.cloudflare.com:3478' },
-                    { urls: 'stun:openrelay.metered.ca:80' },
+                    { urls: 'stun:global.stun.twilio.com:3478' },
                     {
                         urls: "turn:openrelay.metered.ca:80",
-                        username: "openrelayproject",
-                        credential: "openrelayproject"
-                    },
-                    {
-                        urls: "turn:openrelay.metered.ca:80?transport=tcp",
                         username: "openrelayproject",
                         credential: "openrelayproject"
                     },
@@ -1042,40 +976,11 @@
                         urls: "turn:openrelay.metered.ca:443?transport=tcp",
                         username: "openrelayproject",
                         credential: "openrelayproject"
-                    },
-                    {
-                        urls: "turn:relay.metered.ca:80",
-                        username: "openrelayproject",
-                        credential: "openrelayproject"
-                    },
-                    {
-                        urls: "turn:relay.metered.ca:443",
-                        username: "openrelayproject",
-                        credential: "openrelayproject"
                     }
-                ],
-                iceCandidatePoolSize: 10,
-                sdpSemantics: 'unified-plan'
+                ]
             },
-            debug: 1
+            debug: 2
         };
-
-        // Fetch fresh ephemeral TURN credentials on startup for hosted HTTPS deployments (e.g. Vercel)
-        (function fetchDynamicTurnServers() {
-            fetch('https://openrelay.metered.ca/api/v1/turn/credentials?apiKey=openrelayproject')
-                .then(res => res.json())
-                .then(servers => {
-                    if (Array.isArray(servers) && servers.length > 0) {
-                        peerConfig.config.iceServers = [
-                            { urls: 'stun:stun.l.google.com:19302' },
-                            { urls: 'stun:stun1.l.google.com:19302' },
-                            { urls: 'stun:stun.cloudflare.com:3478' },
-                            ...servers
-                        ];
-                        console.log('[WebRTC] Updated with fresh dynamic TURN credentials:', peerConfig.config.iceServers);
-                    }
-                }).catch(err => console.log('[WebRTC] Using built-in TURN fallback configuration:', err));
-        })();
 
         // Persistent Studio ID logic
         function getStudioId() {
@@ -1315,33 +1220,7 @@
             call.on('close', () => {
                 activeMediaCalls = activeMediaCalls.filter(c => c !== call);
                 if (call._fpsEnforceInterval) clearInterval(call._fpsEnforceInterval);
-                if (call._iceCheckTimeout) clearTimeout(call._iceCheckTimeout);
             });
-
-            // ICE connection state watchdog & auto-restart for cross-network reliability
-            const pc = call.peerConnection;
-            if (pc) {
-                pc.oniceconnectionstatechange = () => {
-                    if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-                        console.warn('[WebRTC Controller] ICE connection ' + pc.iceConnectionState + '. Restarting ICE...');
-                        if (typeof pc.restartIce === 'function') pc.restartIce();
-                        // Re-issue call if stream is active
-                        const layerId = call.metadata ? call.metadata.layerId : null;
-                        if (layerId && window.localStreams[layerId] && call.peer) {
-                            setTimeout(() => {
-                                const newCall = peer.call(call.peer, window.localStreams[layerId], { metadata: { layerId: layerId } });
-                                registerMediaCall(newCall);
-                            }, 1000);
-                        }
-                    }
-                };
-                call._iceCheckTimeout = setTimeout(() => {
-                    if (pc && (pc.iceConnectionState === 'checking' || pc.iceConnectionState === 'new')) {
-                        console.warn('[WebRTC Controller] ICE candidate gathering slow. Triggering ICE restart...');
-                        if (typeof pc.restartIce === 'function') pc.restartIce();
-                    }
-                }, 6000);
-            }
 
             const applyParams = () => {
                 const pc = call.peerConnection;
@@ -1619,13 +1498,12 @@
                             });
                         } else {
                             setP2PStatus('Remote Player Connected', 'text-emerald-400');
-                            // Always pre-establish WebRTC calls in background so stream is warm & ready instantly
-                            Object.keys(window.localStreams).forEach(layerId => {
-                                const call = peer.call(conn.peer, window.localStreams[layerId], { metadata: { layerId: layerId } });
-                                registerMediaCall(call);
-                            });
                             if (window.isOutputActive) {
                                 conn.send({ type: 'FULL_SYNC', layers: window.layers });
+                                Object.keys(window.localStreams).forEach(layerId => {
+                                    const call = peer.call(conn.peer, window.localStreams[layerId], { metadata: { layerId: layerId } });
+                                    registerMediaCall(call);
+                                });
                             } else {
                                 conn.send({ type: 'FULL_SYNC', layers: {} });
                             }
@@ -1643,11 +1521,6 @@
                                 if (playerFpsEl) playerFpsEl.innerText = msg.fps;
                                 const fpsMonitor = document.getElementById('fps-monitor');
                                 if (fpsMonitor) fpsMonitor.classList.remove('hidden');
-                            } else if (msg.type === 'REQUEST_STREAM_RECONNECT') {
-                                if (msg.layerId && window.localStreams[msg.layerId]) {
-                                    const call = peer.call(conn.peer, window.localStreams[msg.layerId], { metadata: { layerId: msg.layerId } });
-                                    registerMediaCall(call);
-                                }
                             }
                         }
                     });
@@ -2284,73 +2157,6 @@
             };
         }
 
-        // Video Converter Server Integration (video_converter_server.js)
-        async function convertAndAddVideo(file) {
-            if (!file) return;
-            const progressCard = document.getElementById('converter-progress-card');
-            const progressBar = document.getElementById('converter-progress-bar');
-            const statusText = document.getElementById('converter-status-text');
-
-            if (progressCard) progressCard.classList.remove('hidden');
-            if (statusText) statusText.innerText = `Uploading & converting "${file.name}"...`;
-            if (progressBar) {
-                progressBar.style.background = '#6366f1';
-                progressBar.style.width = '25%';
-            }
-
-            const formData = new FormData();
-            formData.append('video', file);
-
-            try {
-                const response = await fetch('/convert', {
-                    method: 'POST',
-                    body: formData
-                });
-
-                if (!response.ok) {
-                    throw new Error('Conversion server error or offline');
-                }
-
-                if (progressBar) progressBar.style.width = '75%';
-                if (statusText) statusText.innerText = 'Finalizing 1080p broadcast video...';
-
-                const blob = await response.blob();
-                const convertedFile = new File([blob], `converted_${file.name}`, { type: 'video/mp4' });
-
-                if (progressBar) progressBar.style.width = '100%';
-                if (statusText) statusText.innerText = 'Conversion complete! Video added to canvas.';
-
-                // Automatically add converted video layer to canvas
-                processLocalFileBlob(convertedFile);
-
-                // Trigger browser file download prompt
-                const downloadUrl = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = downloadUrl;
-                a.download = `converted_${file.name.replace(/\.[^/.]+$/, "")}.mp4`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-
-                setTimeout(() => {
-                    if (progressCard) progressCard.classList.add('hidden');
-                }, 4000);
-            } catch (err) {
-                console.warn('Server converter unavailable, falling back to local player aspect-fit:', err);
-                if (statusText) statusText.innerText = `Server offline. Added video with instant client aspect-fit.`;
-                if (progressBar) {
-                    progressBar.style.width = '100%';
-                    progressBar.style.background = '#3b82f6';
-                }
-                // Fallback to local file processing with client drawVideoAspectFit
-                processLocalFileBlob(file);
-                setTimeout(() => {
-                    if (progressCard) progressCard.classList.add('hidden');
-                }, 4000);
-            }
-        }
-        window.convertAndAddVideo = convertAndAddVideo;
-
         // Handles dragged local files. Streams Video/Audio via WebRTC, sends Images as Blobs.
         function processLocalFileBlob(file, x = 960, y = 540) {
             let type = 'image';
@@ -2383,7 +2189,6 @@
 
                 renderControllerLayer(layer.id);
                 renderLayerStack();
-                broadcastDataIfActive({ type: 'ADD_LAYER', layer: layer });
                 updateOutputControlUI();
 
                 // Wait for the HTML element to render and the media to be ready to play
@@ -2409,10 +2214,8 @@
 
                                     // Aspect-Fit helper function to prevent distorting/stretching vertical shorts or custom aspect ratios
                                     function drawVideoAspectFit(source, targetCtx, targetWidth, targetHeight) {
-                                        const vW = source.videoWidth || (typeof source.width === 'number' && source.width > 0 ? source.width : 0);
-                                        const vH = source.videoHeight || (typeof source.height === 'number' && source.height > 0 ? source.height : 0);
-                                        if (!vW || !vH) return;
-
+                                        const vW = (source.videoWidth || source.width) || targetWidth;
+                                        const vH = (source.videoHeight || source.height) || targetHeight;
                                         const scale = Math.min(targetWidth / vW, targetHeight / vH);
                                         const drawW = vW * scale;
                                         const drawH = vH * scale;
@@ -2479,22 +2282,21 @@
                                 broadcastDataIfActive({ type: 'ADD_LAYER', layer: remoteLayer });
                             };
 
-                            // If media is already ready to render
-                            if (media.readyState >= 2) {
+                            // If media is already actively playing
+                            if (media.readyState >= 3 && !media.paused) {
                                 initStream();
                             } else {
-                                // Wait for media readiness
-                                media.addEventListener('canplay', initStream, { once: true });
+                                // Wait for it to ACTUALLY start playing frames
                                 media.addEventListener('playing', initStream, { once: true });
-                                // Short fallback just in case
-                                setTimeout(initStream, 300);
+                                // Fallback just in case
+                                setTimeout(initStream, 3000);
                             }
                         }
                     }
                 };
 
                 // Give the DOM a tiny tick to insert the element before querying it
-                setTimeout(startStreaming, 10);
+                setTimeout(startStreaming, 100);
             }
         }
 
@@ -3396,7 +3198,11 @@
                 if (!entry || !entry.active) return;
                 // Only draw if canvas mode is needed (below 1080p)
                 if (isCanvasModeNeeded() && !sourceVideo.paused && !sourceVideo.ended && sourceVideo.readyState >= 2) {
-                    window.drawVideoAspectFit(sourceVideo, ctx, displayCanvas.width, displayCanvas.height);
+                    if (window.drawVideoAspectFit) {
+                        window.drawVideoAspectFit(sourceVideo, ctx, displayCanvas.width, displayCanvas.height);
+                    } else {
+                        ctx.drawImage(sourceVideo, 0, 0, displayCanvas.width, displayCanvas.height);
+                    }
                 }
                 requestAnimationFrame(drawFrame);
             }
@@ -3432,7 +3238,11 @@
                         function drawFrame() {
                             if (!entry.active || !window._qualityCanvases[id]) return;
                             if (isCanvasModeNeeded() && !entry.source.paused && !entry.source.ended && entry.source.readyState >= 2) {
-                                window.drawVideoAspectFit(entry.source, entry.ctx, entry.canvas.width, entry.canvas.height);
+                                if (window.drawVideoAspectFit) {
+                                    window.drawVideoAspectFit(entry.source, entry.ctx, entry.canvas.width, entry.canvas.height);
+                                } else {
+                                    entry.ctx.drawImage(entry.source, 0, 0, entry.canvas.width, entry.canvas.height);
+                                }
                             }
                             requestAnimationFrame(drawFrame);
                         }
@@ -3556,29 +3366,10 @@
                     window.activePlayerCalls.push(call);
                     call.on('close', () => {
                         window.activePlayerCalls = window.activePlayerCalls.filter(c => c !== call);
-                        if (call._iceCheckTimeout) clearTimeout(call._iceCheckTimeout);
                     });
 
-                    // Player side ICE connection watchdog & auto restart
-                    const pc = call.peerConnection;
-                    if (pc) {
-                        pc.oniceconnectionstatechange = () => {
-                            if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-                                console.warn('[WebRTC Player] ICE connection ' + pc.iceConnectionState + '. Restarting ICE...');
-                                if (typeof pc.restartIce === 'function') pc.restartIce();
-                            }
-                        };
-                        call._iceCheckTimeout = setTimeout(() => {
-                            if (pc && (pc.iceConnectionState === 'checking' || pc.iceConnectionState === 'new')) {
-                                console.warn('[WebRTC Player] ICE candidate gathering slow. Triggering ICE restart...');
-                                if (typeof pc.restartIce === 'function') pc.restartIce();
-                            }
-                        }, 6000);
-                    }
-
                     call.on('stream', remoteStream => {
-                        const layerId = call.metadata ? call.metadata.layerId : null;
-                        if (!layerId) return;
+                        const layerId = call.metadata.layerId;
                         window.remoteStreams = window.remoteStreams || {};
                         window.remoteStreams[layerId] = remoteStream;
 
@@ -3592,10 +3383,10 @@
                                 // FIX: Keep muted to bypass autoplay policy, restore later
                                 vid.muted = true;
 
-                                // Retry play() with fast backoff — stream data flows instantly
+                                // Retry play() with backoff — stream data may not flow immediately
                                 const tryPlay = (attempt) => {
                                     vid.play().catch(() => {
-                                        if (attempt < 12) setTimeout(() => tryPlay(attempt + 1), 100);
+                                        if (attempt < 8) setTimeout(() => tryPlay(attempt + 1), 500);
                                     });
                                 };
 
@@ -3745,16 +3536,15 @@
         }
 
         function startPlayerFPSMonitor() {
-            let zeroFpsCounters = {};
             setInterval(() => {
                 if (!window.hostConnections || window.hostConnections.length === 0 || !window.activePlayerCalls) return;
 
                 let promises = window.activePlayerCalls.map(call => {
                     const pc = call.peerConnection;
-                    if (!pc) return Promise.resolve({ layerId: call.metadata ? call.metadata.layerId : null, fps: 0 });
+                    if (!pc) return Promise.resolve(0);
 
                     const receiver = pc.getReceivers().find(r => r.track && r.track.kind === 'video');
-                    if (!receiver) return Promise.resolve({ layerId: call.metadata ? call.metadata.layerId : null, fps: 0 });
+                    if (!receiver) return Promise.resolve(0);
 
                     return receiver.getStats().then(stats => {
                         let fps = 0;
@@ -3763,32 +3553,15 @@
                                 fps = report.framesPerSecond || 0;
                             }
                         });
-                        return { layerId: call.metadata ? call.metadata.layerId : null, fps: fps };
+                        return fps;
                     });
                 });
 
-                Promise.all(promises).then(results => {
-                    if (results.length > 0) {
-                        const fpsList = results.map(r => r.fps);
-                        const maxPlayerFps = Math.max(0, ...fpsList);
+                Promise.all(promises).then(fpsArray => {
+                    if (fpsArray.length > 0) {
+                        const maxPlayerFps = Math.max(0, ...fpsArray);
                         window.hostConnections.forEach(conn => {
                             if (conn.open) conn.send({ type: 'FPS_REPORT', fps: Math.round(maxPlayerFps) });
-                        });
-
-                        // Watchdog: If a layer has 0 FPS for > 4s, request stream reconnection from Controller
-                        results.forEach(res => {
-                            if (res.layerId) {
-                                if (res.fps === 0) {
-                                    zeroFpsCounters[res.layerId] = (zeroFpsCounters[res.layerId] || 0) + 1;
-                                    if (zeroFpsCounters[res.layerId] === 4) {
-                                        window.hostConnections.forEach(conn => {
-                                            if (conn.open) conn.send({ type: 'REQUEST_STREAM_RECONNECT', layerId: res.layerId });
-                                        });
-                                    }
-                                } else {
-                                    zeroFpsCounters[res.layerId] = 0;
-                                }
-                            }
                         });
                     }
                 });
@@ -3817,32 +3590,12 @@
                     vid.loop = true; vid.playsInline = true;
                     vid.draggable = false;
 
-                    // Stream connecting loader overlay (prevents black screen while NAT traversing)
-                    const loader = document.createElement('div');
-                    loader.className = 'stream-loader-overlay absolute inset-0 flex flex-col items-center justify-center bg-zinc-950/80 text-zinc-400 text-sm font-sans z-10 transition-opacity duration-300';
-                    loader.innerHTML = `
-                        <div class="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mb-2"></div>
-                        <span>Connecting Live Stream...</span>
-                    `;
-                    el.appendChild(loader);
-
-                    const hideLoader = () => {
-                        loader.style.opacity = '0';
-                        setTimeout(() => { if (loader.parentNode) loader.remove(); }, 300);
-                    };
-
-                    vid.addEventListener('playing', hideLoader, { once: true });
-                    vid.addEventListener('loadeddata', hideLoader, { once: true });
-
                     if (layer.isStreamedMedia) {
                         // FIX: Start MUTED to bypass autoplay policy, then restore
                         // real audio settings after play() succeeds.
                         vid.muted = true;
                         if (window.remoteStreams && window.remoteStreams[id]) {
                             vid.srcObject = window.remoteStreams[id];
-                        } else if (layer.src) {
-                            // Cross-network fallback: Use local Blob URL if WebRTC P2P stream is establishing or blocked
-                            vid.src = layer.src;
                         }
                         // Once playing, restore the real audio settings
                         vid.addEventListener('playing', () => {
