@@ -1012,7 +1012,7 @@
         window.localStreams = {};
         window.remoteStreams = {};
 
-        // PeerJS Config with NAT Traversal (STUN & TURN Servers) for Cross-Network Connections
+        // PeerJS Config with Dynamic STUN & TURN Servers for Hosted Cross-Network P2P
         const peerConfig = {
             config: {
                 iceServers: [
@@ -1022,36 +1022,34 @@
                     { urls: 'stun:stun3.l.google.com:19302' },
                     { urls: 'stun:stun4.l.google.com:19302' },
                     { urls: 'stun:stun.cloudflare.com:3478' },
-                    { urls: 'stun:stun.services.mozilla.com:3478' },
-                    { urls: 'stun:relay.metered.ca:80' },
-                    { urls: 'stun:relay.metered.ca:443' },
+                    { urls: 'stun:openrelay.metered.ca:80' },
+                    {
+                        urls: "turn:openrelay.metered.ca:80",
+                        username: "openrelayproject",
+                        credential: "openrelayproject"
+                    },
+                    {
+                        urls: "turn:openrelay.metered.ca:80?transport=tcp",
+                        username: "openrelayproject",
+                        credential: "openrelayproject"
+                    },
+                    {
+                        urls: "turn:openrelay.metered.ca:443",
+                        username: "openrelayproject",
+                        credential: "openrelayproject"
+                    },
+                    {
+                        urls: "turn:openrelay.metered.ca:443?transport=tcp",
+                        username: "openrelayproject",
+                        credential: "openrelayproject"
+                    },
                     {
                         urls: "turn:relay.metered.ca:80",
                         username: "openrelayproject",
                         credential: "openrelayproject"
                     },
                     {
-                        urls: "turn:relay.metered.ca:80?transport=udp",
-                        username: "openrelayproject",
-                        credential: "openrelayproject"
-                    },
-                    {
-                        urls: "turn:relay.metered.ca:80?transport=tcp",
-                        username: "openrelayproject",
-                        credential: "openrelayproject"
-                    },
-                    {
                         urls: "turn:relay.metered.ca:443",
-                        username: "openrelayproject",
-                        credential: "openrelayproject"
-                    },
-                    {
-                        urls: "turn:relay.metered.ca:443?transport=tcp",
-                        username: "openrelayproject",
-                        credential: "openrelayproject"
-                    },
-                    {
-                        urls: "turns:relay.metered.ca:443?transport=tcp",
                         username: "openrelayproject",
                         credential: "openrelayproject"
                     }
@@ -1061,6 +1059,23 @@
             },
             debug: 1
         };
+
+        // Fetch fresh ephemeral TURN credentials on startup for hosted HTTPS deployments (e.g. Vercel)
+        (function fetchDynamicTurnServers() {
+            fetch('https://openrelay.metered.ca/api/v1/turn/credentials?apiKey=openrelayproject')
+                .then(res => res.json())
+                .then(servers => {
+                    if (Array.isArray(servers) && servers.length > 0) {
+                        peerConfig.config.iceServers = [
+                            { urls: 'stun:stun.l.google.com:19302' },
+                            { urls: 'stun:stun1.l.google.com:19302' },
+                            { urls: 'stun:stun.cloudflare.com:3478' },
+                            ...servers
+                        ];
+                        console.log('[WebRTC] Updated with fresh dynamic TURN credentials:', peerConfig.config.iceServers);
+                    }
+                }).catch(err => console.log('[WebRTC] Using built-in TURN fallback configuration:', err));
+        })();
 
         // Persistent Studio ID logic
         function getStudioId() {
@@ -1310,11 +1325,19 @@
                     if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
                         console.warn('[WebRTC Controller] ICE connection ' + pc.iceConnectionState + '. Restarting ICE...');
                         if (typeof pc.restartIce === 'function') pc.restartIce();
+                        // Re-issue call if stream is active
+                        const layerId = call.metadata ? call.metadata.layerId : null;
+                        if (layerId && window.localStreams[layerId] && call.peer) {
+                            setTimeout(() => {
+                                const newCall = peer.call(call.peer, window.localStreams[layerId], { metadata: { layerId: layerId } });
+                                registerMediaCall(newCall);
+                            }, 1000);
+                        }
                     }
                 };
                 call._iceCheckTimeout = setTimeout(() => {
                     if (pc && (pc.iceConnectionState === 'checking' || pc.iceConnectionState === 'new')) {
-                        console.warn('[WebRTC Controller] ICE candidate gathering taking long. Triggering ICE restart...');
+                        console.warn('[WebRTC Controller] ICE candidate gathering slow. Triggering ICE restart...');
                         if (typeof pc.restartIce === 'function') pc.restartIce();
                     }
                 }, 6000);
@@ -3722,15 +3745,16 @@
         }
 
         function startPlayerFPSMonitor() {
+            let zeroFpsCounters = {};
             setInterval(() => {
                 if (!window.hostConnections || window.hostConnections.length === 0 || !window.activePlayerCalls) return;
 
                 let promises = window.activePlayerCalls.map(call => {
                     const pc = call.peerConnection;
-                    if (!pc) return Promise.resolve(0);
+                    if (!pc) return Promise.resolve({ layerId: call.metadata ? call.metadata.layerId : null, fps: 0 });
 
                     const receiver = pc.getReceivers().find(r => r.track && r.track.kind === 'video');
-                    if (!receiver) return Promise.resolve(0);
+                    if (!receiver) return Promise.resolve({ layerId: call.metadata ? call.metadata.layerId : null, fps: 0 });
 
                     return receiver.getStats().then(stats => {
                         let fps = 0;
@@ -3739,15 +3763,32 @@
                                 fps = report.framesPerSecond || 0;
                             }
                         });
-                        return fps;
+                        return { layerId: call.metadata ? call.metadata.layerId : null, fps: fps };
                     });
                 });
 
-                Promise.all(promises).then(fpsArray => {
-                    if (fpsArray.length > 0) {
-                        const maxPlayerFps = Math.max(0, ...fpsArray);
+                Promise.all(promises).then(results => {
+                    if (results.length > 0) {
+                        const fpsList = results.map(r => r.fps);
+                        const maxPlayerFps = Math.max(0, ...fpsList);
                         window.hostConnections.forEach(conn => {
                             if (conn.open) conn.send({ type: 'FPS_REPORT', fps: Math.round(maxPlayerFps) });
+                        });
+
+                        // Watchdog: If a layer has 0 FPS for > 4s, request stream reconnection from Controller
+                        results.forEach(res => {
+                            if (res.layerId) {
+                                if (res.fps === 0) {
+                                    zeroFpsCounters[res.layerId] = (zeroFpsCounters[res.layerId] || 0) + 1;
+                                    if (zeroFpsCounters[res.layerId] === 4) {
+                                        window.hostConnections.forEach(conn => {
+                                            if (conn.open) conn.send({ type: 'REQUEST_STREAM_RECONNECT', layerId: res.layerId });
+                                        });
+                                    }
+                                } else {
+                                    zeroFpsCounters[res.layerId] = 0;
+                                }
+                            }
                         });
                     }
                 });
@@ -3775,6 +3816,23 @@
                     vid.className = 'quality-source-video';
                     vid.loop = true; vid.playsInline = true;
                     vid.draggable = false;
+
+                    // Stream connecting loader overlay (prevents black screen while NAT traversing)
+                    const loader = document.createElement('div');
+                    loader.className = 'stream-loader-overlay absolute inset-0 flex flex-col items-center justify-center bg-zinc-950/80 text-zinc-400 text-sm font-sans z-10 transition-opacity duration-300';
+                    loader.innerHTML = `
+                        <div class="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mb-2"></div>
+                        <span>Connecting Live Stream...</span>
+                    `;
+                    el.appendChild(loader);
+
+                    const hideLoader = () => {
+                        loader.style.opacity = '0';
+                        setTimeout(() => { if (loader.parentNode) loader.remove(); }, 300);
+                    };
+
+                    vid.addEventListener('playing', hideLoader, { once: true });
+                    vid.addEventListener('loadeddata', hideLoader, { once: true });
 
                     if (layer.isStreamedMedia) {
                         // FIX: Start MUTED to bypass autoplay policy, then restore
