@@ -994,7 +994,7 @@
         // Attaches a listener that logs the real ICE connection state to the
         // console AND (for the Player) shows an on-screen banner instead of a
         // silent black screen when the media relay fails to connect.
-        function attachIceDebug(call, label) {
+        function attachIceDebug(call, label, onChange) {
             const tryAttach = () => {
                 const pc = call.peerConnection;
                 if (!pc) { setTimeout(tryAttach, 200); return; }
@@ -1004,9 +1004,52 @@
                     if (typeof window.onIceStateChange === 'function') {
                         window.onIceStateChange(state, label);
                     }
+                    if (typeof onChange === 'function') onChange(state, pc);
                 };
             };
             tryAttach();
+        }
+
+        // Adds a small extra buffer on the RECEIVING side to absorb network
+        // jitter (packets arriving unevenly spaced) — this is what smooths out
+        // stutter/uneven FPS on a relayed cross-network connection, at the
+        // cost of a small amount of extra latency (~300ms). Chrome-only API;
+        // safely no-ops on browsers that don't support it.
+        function applyReceiverJitterBuffer(call, seconds) {
+            const trySet = () => {
+                const pc = call.peerConnection;
+                if (!pc) { setTimeout(trySet, 300); return; }
+                pc.getReceivers().forEach(receiver => {
+                    if (receiver.track && receiver.track.kind === 'video') {
+                        try { receiver.playoutDelayHint = seconds; } catch (e) { /* unsupported */ }
+                        if (receiver.jitterBufferTarget !== undefined) {
+                            try { receiver.jitterBufferTarget = seconds * 1000; } catch (e) { /* unsupported */ }
+                        }
+                    }
+                });
+            };
+            trySet();
+        }
+
+        // Checks whether the active media path is going through a TURN relay
+        // (always true for cross-network connections) vs a direct LAN/STUN
+        // path. Relayed paths have far less predictable bandwidth than a LAN,
+        // so we use this to auto-tune bitrate ceilings and keep FPS steady.
+        async function refreshRelayFlag(pc) {
+            try {
+                const stats = await pc.getStats();
+                let isRelay = false;
+                stats.forEach(r => {
+                    if (r.type === 'candidate-pair' && (r.state === 'succeeded' || r.nominated)) {
+                        const local = stats.get(r.localCandidateId);
+                        const remote = stats.get(r.remoteCandidateId);
+                        if ((local && local.candidateType === 'relay') || (remote && remote.candidateType === 'relay')) {
+                            isRelay = true;
+                        }
+                    }
+                });
+                pc._isRelayed = isRelay;
+            } catch (e) { /* ignore — keep last known value */ }
         }
 
         // Persistent Studio ID logic
@@ -1162,11 +1205,21 @@
         window.lastSelectedQuality = 1080;
 
         function registerMediaCall(call) {
-            attachIceDebug(call, 'outgoing-' + (call.metadata ? call.metadata.layerId : call.peer));
+            const label = 'outgoing-' + (call.metadata ? call.metadata.layerId : call.peer);
+            attachIceDebug(call, label, (state, pc) => {
+                // Re-apply encoder params immediately whenever ICE (re)connects —
+                // this is what used to drift back to low/unstable FPS after a
+                // network hiccup, TURN relay switch, or reconnect.
+                if (state === 'connected' || state === 'completed') {
+                    refreshRelayFlag(pc);
+                    applyParams();
+                }
+            });
             activeMediaCalls.push(call);
             call.on('close', () => {
                 activeMediaCalls = activeMediaCalls.filter(c => c !== call);
                 if (call._fpsEnforceInterval) clearInterval(call._fpsEnforceInterval);
+                if (call._relayCheckInterval) clearInterval(call._relayCheckInterval);
             });
 
             const applyParams = () => {
@@ -1199,16 +1252,27 @@
                         const scale = nativeHeight / res.h;
                         parameters.encodings[0].scaleResolutionDownBy = Math.max(1, scale);
 
-                        // Set max bitrate per resolution to standard broadcast limits
-                        // Setting this too high (like 20Mbps) causes CPU encoding bottlenecks and network congestion!
+                        // Set max bitrate per resolution to standard broadcast limits.
+                        // RELAY-AWARE: when the path is going through a TURN relay
+                        // (i.e. the two devices are on different networks), real
+                        // available bandwidth is far less predictable than on a LAN.
+                        // Pushing the same 6 Mbps ceiling used for LAN onto a relayed
+                        // path is exactly what causes the "worked fine locally, jumpy
+                        // FPS remotely" symptom — the encoder keeps trying for more
+                        // bitrate than the path can sustain, so the browser drops
+                        // frames instead of just lowering quality. We lower the
+                        // ceiling automatically on relayed connections so the
+                        // encoder settles into something the network can actually
+                        // sustain, which keeps FPS steady at the cost of some sharpness.
+                        const isRelayed = !!pc._isRelayed;
                         if (res.h >= 1080) {
-                            parameters.encodings[0].maxBitrate = 6000000; // 6 Mbps
+                            parameters.encodings[0].maxBitrate = isRelayed ? 3000000 : 6000000;
                         } else if (res.h >= 720) {
-                            parameters.encodings[0].maxBitrate = 3500000; // 3.5 Mbps
+                            parameters.encodings[0].maxBitrate = isRelayed ? 1800000 : 3500000;
                         } else if (res.h >= 480) {
-                            parameters.encodings[0].maxBitrate = 1500000; // 1.5 Mbps
+                            parameters.encodings[0].maxBitrate = isRelayed ? 800000 : 1500000;
                         } else {
-                            parameters.encodings[0].maxBitrate = 400000;  // 400 Kbps
+                            parameters.encodings[0].maxBitrate = isRelayed ? 250000 : 400000;
                         }
 
                         // FIX: 'Zoom Style' Degradation - Allow the bitrate to drop extremely low (100 Kbps)
@@ -1234,19 +1298,24 @@
             };
 
             // FIX: Retry applyParams every 500ms until the PeerConnection is ready,
-            // then keep re-enforcing every 3s to prevent browser drift back to low FPS.
+            // then keep re-enforcing every 1s (tightened from 3s) so the encoder
+            // never drifts away from these settings for long.
             let attempts = 0;
             const checkPC = setInterval(() => {
                 if (call.peerConnection) {
                     clearInterval(checkPC);
+                    refreshRelayFlag(call.peerConnection);
                     // Apply immediately, then retry a few times to ensure it sticks
                     const retry = setInterval(() => {
                         applyParams();
                         attempts++;
                         if (attempts >= 6) clearInterval(retry); // stop after ~3s
                     }, 500);
-                    // After initial burst, enforce every 3s for the lifetime of the call
-                    call._fpsEnforceInterval = setInterval(applyParams, 3000);
+                    // After initial burst, enforce every 1s for the lifetime of the call
+                    call._fpsEnforceInterval = setInterval(applyParams, 1000);
+                    // Re-check relay status periodically — network path can change
+                    // mid-call (e.g. ICE restart, Wi-Fi <-> mobile data handover)
+                    call._relayCheckInterval = setInterval(() => refreshRelayFlag(call.peerConnection), 5000);
                 }
             }, 100);
             setTimeout(() => clearInterval(checkPC), 10000);
@@ -1408,6 +1477,7 @@
                     peer.on('call', call => {
                         call.answer();
                         attachIceDebug(call, 'incoming-controller-' + (call.metadata ? call.metadata.layerId : call.peer));
+                        applyReceiverJitterBuffer(call, 0.3);
                         window.activeMediaCalls = window.activeMediaCalls || [];
                         window.activeMediaCalls.push(call);
                         call.on('close', () => {
@@ -3283,6 +3353,7 @@
                 peer.on('call', call => {
                     call.answer();
                     attachIceDebug(call, 'incoming-player-' + (call.metadata ? call.metadata.layerId : call.peer));
+                    applyReceiverJitterBuffer(call, 0.3);
 
                     window.activePlayerCalls = window.activePlayerCalls || [];
                     window.activePlayerCalls.push(call);
