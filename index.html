@@ -180,7 +180,7 @@
         }
 
         .layer-element video {
-            object-fit: cover;
+            object-fit: contain;
             background: #000;
             pointer-events: none;
             max-width: none;
@@ -2122,12 +2122,12 @@
 
                                     // Paint initial frame immediately if video is loaded
                                     if (media.readyState >= 2) {
-                                        try { ctx.drawImage(media, 0, 0, 1920, 1080); } catch (e) { }
+                                        try { drawAspectFitVideo(ctx, media, 1920, 1080); } catch (e) { }
                                     }
 
                                     const drawFrame = () => {
                                         if (media.readyState >= 2 && !media.paused && !media.ended) {
-                                            try { ctx.drawImage(media, 0, 0, 1920, 1080); } catch (e) { }
+                                            try { drawAspectFitVideo(ctx, media, 1920, 1080); } catch (e) { }
                                         }
                                     };
 
@@ -3086,6 +3086,33 @@
         // Track all quality rendering loops so we can update them
         window._qualityCanvases = {};
 
+        // Utility function to draw video onto canvas preserving aspect ratio (no stretching/cropping)
+        function drawAspectFitVideo(ctx, video, canvasW, canvasH) {
+            if (!video || video.readyState < 2) return;
+            const vw = video.videoWidth || canvasW;
+            const vh = video.videoHeight || canvasH;
+            const videoAspect = vw / vh;
+            const canvasAspect = canvasW / canvasH;
+
+            let drawW, drawH, drawX, drawY;
+
+            if (videoAspect > canvasAspect) {
+                drawW = canvasW;
+                drawH = canvasW / videoAspect;
+                drawX = 0;
+                drawY = (canvasH - drawH) / 2;
+            } else {
+                drawH = canvasH;
+                drawW = canvasH * videoAspect;
+                drawX = (canvasW - drawW) / 2;
+                drawY = 0;
+            }
+
+            ctx.fillStyle = '#000000';
+            ctx.fillRect(0, 0, canvasW, canvasH);
+            ctx.drawImage(video, drawX, drawY, drawW, drawH);
+        }
+
         // Returns true if we need the canvas pipeline (quality < 1080p)
         function isCanvasModeNeeded() {
             return activeRes.h < 1080;
@@ -3104,7 +3131,7 @@
                 if (!entry || !entry.active) return;
                 // Only draw if canvas mode is needed (below 1080p)
                 if (isCanvasModeNeeded() && !sourceVideo.paused && !sourceVideo.ended && sourceVideo.readyState >= 2) {
-                    ctx.drawImage(sourceVideo, 0, 0, displayCanvas.width, displayCanvas.height);
+                    drawAspectFitVideo(ctx, sourceVideo, displayCanvas.width, displayCanvas.height);
                 }
                 requestAnimationFrame(drawFrame);
             }
@@ -3140,7 +3167,7 @@
                         function drawFrame() {
                             if (!entry.active || !window._qualityCanvases[id]) return;
                             if (isCanvasModeNeeded() && !entry.source.paused && !entry.source.ended && entry.source.readyState >= 2) {
-                                entry.ctx.drawImage(entry.source, 0, 0, entry.canvas.width, entry.canvas.height);
+                                drawAspectFitVideo(entry.ctx, entry.source, entry.canvas.width, entry.canvas.height);
                             }
                             requestAnimationFrame(drawFrame);
                         }
