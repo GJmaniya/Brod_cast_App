@@ -934,31 +934,52 @@
         window.localStreams = {};
         window.remoteStreams = {};
 
-        // PeerJS Config with NAT Traversal (STUN Servers) for Internet Connections
+        // PeerJS Config with NAT Traversal (STUN & TURN Relays) for Internet / Cross-Network Connections
+        const iceServersList = [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
+            { urls: 'stun:stun.cloudflare.com:3478' },
+            { urls: 'stun:global.stun.twilio.com:3478' },
+            { urls: 'stun:stun.services.mozilla.com' },
+            { urls: 'stun:openrelay.metered.ca:80' },
+            {
+                urls: "turn:openrelay.metered.ca:80",
+                username: "openrelayproject",
+                credential: "openrelayproject"
+            },
+            {
+                urls: "turn:openrelay.metered.ca:443",
+                username: "openrelayproject",
+                credential: "openrelayproject"
+            },
+            {
+                urls: "turn:openrelay.metered.ca:443?transport=tcp",
+                username: "openrelayproject",
+                credential: "openrelayproject"
+            },
+            {
+                urls: "turns:openrelay.metered.ca:443?transport=tcp",
+                username: "openrelayproject",
+                credential: "openrelayproject"
+            },
+            {
+                urls: "turns:openrelay.metered.ca:443",
+                username: "openrelayproject",
+                credential: "openrelayproject"
+            }
+        ];
+
         const peerConfig = {
             config: {
-                iceServers: [
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:stun1.l.google.com:19302' },
-                    { urls: 'stun:global.stun.twilio.com:3478' },
-                    {
-                        urls: "turn:openrelay.metered.ca:80",
-                        username: "openrelayproject",
-                        credential: "openrelayproject"
-                    },
-                    {
-                        urls: "turn:openrelay.metered.ca:443",
-                        username: "openrelayproject",
-                        credential: "openrelayproject"
-                    },
-                    {
-                        urls: "turn:openrelay.metered.ca:443?transport=tcp",
-                        username: "openrelayproject",
-                        credential: "openrelayproject"
-                    }
-                ]
+                iceServers: iceServersList,
+                iceCandidatePoolSize: 10,
+                sdpSemantics: 'unified-plan'
             },
-            debug: 2
+            iceServers: iceServersList,
+            debug: 1
         };
 
         // Persistent Studio ID logic
@@ -1124,62 +1145,68 @@
                 const pc = call.peerConnection;
                 if (!pc || pc.connectionState === 'closed') return;
 
+                // Monitor ICE connection state and restart ICE automatically if cross-network connection drops
+                if (!pc._iceMonitorSet) {
+                    pc._iceMonitorSet = true;
+                    pc.oniceconnectionstatechange = () => {
+                        console.log("PeerConnection ICE State:", pc.iceConnectionState);
+                        if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+                            if (typeof pc.restartIce === 'function') {
+                                try { pc.restartIce(); } catch (e) { }
+                            }
+                        }
+                    };
+                }
+
                 pc.getSenders().forEach(sender => {
                     if (sender.track && sender.track.kind === 'video') {
-                        const parameters = sender.getParameters();
-                        if (!parameters.encodings || parameters.encodings.length === 0) {
-                            parameters.encodings = [{}];
-                        }
+                        try {
+                            const parameters = sender.getParameters();
+                            if (!parameters.encodings || parameters.encodings.length === 0) {
+                                parameters.encodings = [{}];
+                            }
 
-                        parameters.encodings[0].networkPriority = 'high';
-                        parameters.encodings[0].priority = 'high';
+                            parameters.encodings[0].networkPriority = 'high';
+                            parameters.encodings[0].priority = 'high';
 
-                        const res = RESOLUTIONS[window.lastSelectedQuality] || RESOLUTIONS[1080];
+                            const res = RESOLUTIONS[window.lastSelectedQuality] || RESOLUTIONS[1080];
 
-                        // Extract real intrinsic height from the DOM element
-                        const layerId = call.metadata ? call.metadata.layerId : null;
-                        let intrinsicHeight = 0;
-                        if (layerId) {
-                            const el = document.getElementById(`ctrl-${layerId}`);
-                            const media = el ? el.querySelector('video') : null;
-                            if (media && media.videoHeight) intrinsicHeight = media.videoHeight;
-                        }
+                            // Extract real intrinsic height from the DOM element
+                            const layerId = call.metadata ? call.metadata.layerId : null;
+                            let intrinsicHeight = 0;
+                            if (layerId) {
+                                const el = document.getElementById(`ctrl-${layerId}`);
+                                const media = el ? el.querySelector('video') : null;
+                                if (media && media.videoHeight) intrinsicHeight = media.videoHeight;
+                            }
 
-                        const settings = sender.track.getSettings();
-                        const nativeHeight = intrinsicHeight || settings.height || 1080;
-                        const scale = nativeHeight / res.h;
-                        parameters.encodings[0].scaleResolutionDownBy = Math.max(1, scale);
+                            const settings = sender.track.getSettings();
+                            const nativeHeight = intrinsicHeight || settings.height || 1080;
+                            const scale = nativeHeight / res.h;
+                            parameters.encodings[0].scaleResolutionDownBy = Math.max(1, scale);
 
-                        // Set max bitrate per resolution to standard broadcast limits
-                        // Setting this too high (like 20Mbps) causes CPU encoding bottlenecks and network congestion!
-                        if (res.h >= 1080) {
-                            parameters.encodings[0].maxBitrate = 6000000; // 6 Mbps
-                        } else if (res.h >= 720) {
-                            parameters.encodings[0].maxBitrate = 3500000; // 3.5 Mbps
-                        } else if (res.h >= 480) {
-                            parameters.encodings[0].maxBitrate = 1500000; // 1.5 Mbps
-                        } else {
-                            parameters.encodings[0].maxBitrate = 400000;  // 400 Kbps
-                        }
+                            if (res.h >= 1080) {
+                                parameters.encodings[0].maxBitrate = 5000000;
+                            } else if (res.h >= 720) {
+                                parameters.encodings[0].maxBitrate = 3000000;
+                            } else if (res.h >= 480) {
+                                parameters.encodings[0].maxBitrate = 1200000;
+                            } else {
+                                parameters.encodings[0].maxBitrate = 400000;
+                            }
 
-                        // FIX: 'Zoom Style' Degradation - Allow the bitrate to drop extremely low (100 Kbps)
-                        // This forces WebRTC to make the video blocky/blurry on bad networks INSTEAD of dropping frames.
-                        parameters.encodings[0].minBitrate = 100000;
+                            parameters.encodings[0].minBitrate = 100000;
 
-                        const bitrateMode = document.getElementById('bitrate-mode') ? document.getElementById('bitrate-mode').value : 'vbr';
-                        if (bitrateMode === 'cbr') {
-                            parameters.encodings[0].minBitrate = parameters.encodings[0].maxBitrate;
-                        }
+                            const bitrateMode = document.getElementById('bitrate-mode') ? document.getElementById('bitrate-mode').value : 'vbr';
+                            if (bitrateMode === 'cbr') {
+                                parameters.encodings[0].minBitrate = parameters.encodings[0].maxBitrate;
+                            }
 
-                        // FIX: 'maintain-framerate' is the correct value — it tells the
-                        // browser to DROP RESOLUTION before dropping frames.
-                        // 'maintain-resolution' was causing 6-10 FPS by doing the opposite.
-                        parameters.degradationPreference = 'maintain-framerate';
+                            parameters.degradationPreference = 'maintain-framerate';
+                            parameters.encodings[0].maxFramerate = 30;
 
-                        // Hard-lock to 30 FPS
-                        parameters.encodings[0].maxFramerate = 30;
-
-                        sender.setParameters(parameters).catch(e => { /* retry will handle it */ });
+                            sender.setParameters(parameters).catch(e => { /* retry will handle it */ });
+                        } catch (err) { }
                     }
                 });
             };
@@ -2084,30 +2111,52 @@
                                 let finalStream;
 
                                 if (layer.type === 'video') {
-                                    // CANVAS DOWNSCALING PIPELINE
-                                    // Solves the 4K pixelation and 18 FPS overload bug by hardware-downscaling to 1080p BEFORE encoding!
+                                    // CANVAS DOWNSCALING PIPELINE WITH BACKGROUND TAB FALLBACK
                                     const renderCanvas = document.createElement('canvas');
                                     renderCanvas.width = 1920;
                                     renderCanvas.height = 1080;
                                     const ctx = renderCanvas.getContext('2d', { alpha: false });
 
-                                    const drawLoop = () => {
+                                    // Force video playback in preview
+                                    media.play().catch(e => { });
+
+                                    // Paint initial frame immediately if video is loaded
+                                    if (media.readyState >= 2) {
+                                        try { ctx.drawImage(media, 0, 0, 1920, 1080); } catch (e) { }
+                                    }
+
+                                    const drawFrame = () => {
                                         if (media.readyState >= 2 && !media.paused && !media.ended) {
-                                            ctx.drawImage(media, 0, 0, 1920, 1080);
+                                            try { ctx.drawImage(media, 0, 0, 1920, 1080); } catch (e) { }
                                         }
+                                    };
+
+                                    const drawLoop = () => {
+                                        drawFrame();
                                         if (window.layers[layer.id]) {
                                             requestAnimationFrame(drawLoop);
                                         }
                                     };
                                     requestAnimationFrame(drawLoop);
 
-                                    // Capture pristine 1080p at STRICTLY 30 FPS
+                                    // FIX: Timer fallback ensures canvas continues updating even when the browser tab is backgrounded/minimized!
+                                    const timerId = setInterval(() => {
+                                        if (!window.layers[layer.id]) {
+                                            clearInterval(timerId);
+                                            return;
+                                        }
+                                        drawFrame();
+                                    }, 33); // ~30 FPS fallback timer
+
+                                    // Capture pristine 1080p stream at STRICTLY 30 FPS
                                     const videoStream = renderCanvas.captureStream(30);
 
                                     // Extract Audio from the original media
                                     let audioStream;
-                                    if (media.captureStream) audioStream = media.captureStream();
-                                    else if (media.mozCaptureStream) audioStream = media.mozCaptureStream();
+                                    try {
+                                        if (media.captureStream) audioStream = media.captureStream();
+                                        else if (media.mozCaptureStream) audioStream = media.mozCaptureStream();
+                                    } catch (err) { }
 
                                     const audioTracks = audioStream ? audioStream.getAudioTracks() : [];
 
@@ -2121,17 +2170,16 @@
                                 }
 
                                 if (finalStream) {
-                                    // Tell WebRTC this is high-motion video so it prioritizes FPS (smoothness) over crisp pixels
                                     finalStream.getVideoTracks().forEach(t => {
                                         t.contentHint = 'motion';
-                                        // DO NOT call applyConstraints on captureStream tracks in Chrome, 
-                                        // it breaks the pipeline and results in 0 FPS output.
                                     });
 
                                     window.localStreams[layer.id] = finalStream;
                                     p2pConnections.forEach(conn => {
-                                        const call = peer.call(conn.peer, finalStream, { metadata: { layerId: layer.id } });
-                                        registerMediaCall(call);
+                                        if (conn.open) {
+                                            const call = peer.call(conn.peer, finalStream, { metadata: { layerId: layer.id } });
+                                            registerMediaCall(call);
+                                        }
                                     });
                                 }
 
@@ -3214,12 +3262,27 @@
 
                     window.activePlayerCalls = window.activePlayerCalls || [];
                     window.activePlayerCalls.push(call);
+
+                    // ICE state change handling on player side for cross-network connections
+                    if (call.peerConnection) {
+                        call.peerConnection.oniceconnectionstatechange = () => {
+                            console.log("Player Call ICE State:", call.peerConnection.iceConnectionState);
+                            if (call.peerConnection.iceConnectionState === 'failed' || call.peerConnection.iceConnectionState === 'disconnected') {
+                                if (typeof call.peerConnection.restartIce === 'function') {
+                                    try { call.peerConnection.restartIce(); } catch (e) { }
+                                }
+                            }
+                        };
+                    }
+
                     call.on('close', () => {
                         window.activePlayerCalls = window.activePlayerCalls.filter(c => c !== call);
                     });
 
                     call.on('stream', remoteStream => {
-                        const layerId = call.metadata.layerId;
+                        const layerId = call.metadata ? call.metadata.layerId : null;
+                        if (!layerId) return;
+
                         window.remoteStreams = window.remoteStreams || {};
                         window.remoteStreams[layerId] = remoteStream;
 
@@ -3228,15 +3291,12 @@
                         if (existingEl) {
                             const vid = existingEl.querySelector('video, audio');
                             if (vid) {
-                                // Always (re)set srcObject — even if already set, refresh it
                                 vid.srcObject = remoteStream;
-                                // FIX: Keep muted to bypass autoplay policy, restore later
                                 vid.muted = true;
 
-                                // Retry play() with backoff — stream data may not flow immediately
                                 const tryPlay = (attempt) => {
                                     vid.play().catch(() => {
-                                        if (attempt < 8) setTimeout(() => tryPlay(attempt + 1), 500);
+                                        if (attempt < 10) setTimeout(() => tryPlay(attempt + 1), 400);
                                     });
                                 };
 
@@ -3437,17 +3497,14 @@
                     vid.setAttribute('data-output-format', 'UYVY');
                     vid.setAttribute('data-render-format', 'VMR9');
                     vid.className = 'quality-source-video';
-                    vid.loop = true; vid.playsInline = true;
+                    vid.loop = true; vid.playsInline = true; vid.autoplay = true;
                     vid.draggable = false;
 
                     if (layer.isStreamedMedia) {
-                        // FIX: Start MUTED to bypass autoplay policy, then restore
-                        // real audio settings after play() succeeds.
                         vid.muted = true;
                         if (window.remoteStreams && window.remoteStreams[id]) {
                             vid.srcObject = window.remoteStreams[id];
                         }
-                        // Once playing, restore the real audio settings
                         vid.addEventListener('playing', () => {
                             if (layer.audio) {
                                 vid.volume = layer.audio.volume;
@@ -3468,8 +3525,12 @@
                     vid.addEventListener('playing', () => startQualityRenderLoop(id, vid, qCanvas));
                     startQualityRenderLoop(id, vid, qCanvas);
 
-                    // Attempt play immediately; watchdog will retry if blocked
-                    vid.play().catch(() => { });
+                    const tryPlayVid = (attempt = 0) => {
+                        vid.play().catch(() => {
+                            if (attempt < 10) setTimeout(() => tryPlayVid(attempt + 1), 400);
+                        });
+                    };
+                    tryPlayVid(0);
                 } else if (layer.type === 'audio') {
                     const aud = document.createElement('audio');
                     if (layer.isStreamedMedia) {
