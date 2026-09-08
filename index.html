@@ -186,12 +186,6 @@
             max-width: none;
             flex-shrink: 0;
         }
-        /* "Fit to Frame" mode (Ctrl+F) — shows the whole video without cropping,
-           letterboxing/pillarboxing instead, just like vMix/OBS "Fit" option. */
-        .layer-element.fit-contain video {
-            object-fit: contain !important;
-            background: #000;
-        }
         .layer-element img,
         .layer-element iframe {
             object-fit: contain;
@@ -553,15 +547,6 @@
                         </path>
                     </svg>
                     <span>Copy Remote Link</span>
-                </button>
-                <button onclick="copyOBSLink()" title="Transparent background link — paste into OBS/vMix Browser Source"
-                    class="flex items-center gap-1.5 sm:gap-2 bg-purple-600/20 hover:bg-purple-600/40 text-purple-400 border border-purple-600/50 px-2.5 sm:px-3 py-1.5 rounded transition text-xs font-bold uppercase tracking-wider">
-                    <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1">
-                        </path>
-                    </svg>
-                    <span>Copy OBS/vMix Link</span>
                 </button>
                 <div
                     class="bg-zinc-950 px-2.5 sm:px-3 py-1.5 rounded border border-zinc-800 shadow-inner flex items-center">
@@ -949,22 +934,7 @@
         window.localStreams = {};
         window.remoteStreams = {};
 
-        // ==========================================
-        // TURN CREDENTIALS — REPLACE THESE
-        // ==========================================
-        // The old "openrelayproject/openrelayproject" login is a PUBLIC, SHARED
-        // free TURN credential (used by thousands of unrelated apps worldwide).
-        // It has no fixed uptime/quota guarantee and can silently stop working
-        // for everyone at any time — that's why cross-network calls broke
-        // suddenly with no code change on your side.
-        //
-        // Fix: sign up for a FREE account at https://www.metered.ca/tools/openrelay
-        // (or any other TURN provider) and paste YOUR OWN unique
-        // username/credential below. Free tier = 20 GB/month, private to you.
-        const TURN_USERNAME = "PASTE_YOUR_METERED_USERNAME_HERE";
-        const TURN_CREDENTIAL = "PASTE_YOUR_METERED_CREDENTIAL_HERE";
-
-        // PeerJS Config with NAT Traversal (STUN + TURN Servers) for Internet Connections
+        // PeerJS Config with NAT Traversal (STUN Servers) for Internet Connections
         const peerConfig = {
             config: {
                 iceServers: [
@@ -972,24 +942,12 @@
                     { urls: 'stun:stun1.l.google.com:19302' },
                     { urls: 'stun:global.stun.twilio.com:3478' },
                     {
-                        urls: "turn:global.relay.metered.ca:80",
-                        username: TURN_USERNAME,
-                        credential: TURN_CREDENTIAL
-                    },
-                    {
-                        urls: "turn:global.relay.metered.ca:443",
-                        username: TURN_USERNAME,
-                        credential: TURN_CREDENTIAL
-                    },
-                    {
-                        urls: "turn:global.relay.metered.ca:443?transport=tcp",
-                        username: TURN_USERNAME,
-                        credential: TURN_CREDENTIAL
-                    },
-                    // Old public/shared TURN kept ONLY as a last-resort fallback.
-                    // Do not rely on this — it is unreliable (see note above).
-                    {
                         urls: "turn:openrelay.metered.ca:80",
+                        username: "openrelayproject",
+                        credential: "openrelayproject"
+                    },
+                    {
+                        urls: "turn:openrelay.metered.ca:443",
                         username: "openrelayproject",
                         credential: "openrelayproject"
                     },
@@ -1002,70 +960,6 @@
             },
             debug: 2
         };
-
-        // ==========================================
-        // ICE CONNECTION DEBUG / STATUS HELPER
-        // ==========================================
-        // Attaches a listener that logs the real ICE connection state to the
-        // console AND (for the Player) shows an on-screen banner instead of a
-        // silent black screen when the media relay fails to connect.
-        function attachIceDebug(call, label, onChange) {
-            const tryAttach = () => {
-                const pc = call.peerConnection;
-                if (!pc) { setTimeout(tryAttach, 200); return; }
-                pc.oniceconnectionstatechange = () => {
-                    const state = pc.iceConnectionState;
-                    console.log(`[ICE:${label}] state = ${state}`);
-                    if (typeof window.onIceStateChange === 'function') {
-                        window.onIceStateChange(state, label);
-                    }
-                    if (typeof onChange === 'function') onChange(state, pc);
-                };
-            };
-            tryAttach();
-        }
-
-        // Adds a small extra buffer on the RECEIVING side to absorb network
-        // jitter (packets arriving unevenly spaced) — this is what smooths out
-        // stutter/uneven FPS on a relayed cross-network connection, at the
-        // cost of a small amount of extra latency (~300ms). Chrome-only API;
-        // safely no-ops on browsers that don't support it.
-        function applyReceiverJitterBuffer(call, seconds) {
-            const trySet = () => {
-                const pc = call.peerConnection;
-                if (!pc) { setTimeout(trySet, 300); return; }
-                pc.getReceivers().forEach(receiver => {
-                    if (receiver.track && receiver.track.kind === 'video') {
-                        try { receiver.playoutDelayHint = seconds; } catch (e) { /* unsupported */ }
-                        if (receiver.jitterBufferTarget !== undefined) {
-                            try { receiver.jitterBufferTarget = seconds * 1000; } catch (e) { /* unsupported */ }
-                        }
-                    }
-                });
-            };
-            trySet();
-        }
-
-        // Checks whether the active media path is going through a TURN relay
-        // (always true for cross-network connections) vs a direct LAN/STUN
-        // path. Relayed paths have far less predictable bandwidth than a LAN,
-        // so we use this to auto-tune bitrate ceilings and keep FPS steady.
-        async function refreshRelayFlag(pc) {
-            try {
-                const stats = await pc.getStats();
-                let isRelay = false;
-                stats.forEach(r => {
-                    if (r.type === 'candidate-pair' && (r.state === 'succeeded' || r.nominated)) {
-                        const local = stats.get(r.localCandidateId);
-                        const remote = stats.get(r.remoteCandidateId);
-                        if ((local && local.candidateType === 'relay') || (remote && remote.candidateType === 'relay')) {
-                            isRelay = true;
-                        }
-                    }
-                });
-                pc._isRelayed = isRelay;
-            } catch (e) { /* ignore — keep last known value */ }
-        }
 
         // Persistent Studio ID logic
         function getStudioId() {
@@ -1145,13 +1039,7 @@
                 return;
             }
 
-            // NOTE: no &transparent=1 here — this link is for a normal remote
-            // viewer (phone, PC browser, etc). Transparent mode makes empty
-            // canvas areas render as undefined/black in a plain browser tab
-            // since there's nothing behind the page for it to show through —
-            // that only makes sense inside OBS/vMix's own compositor. Use
-            // "Copy OBS/vMix Link" for that instead.
-            const playerUrl = window.location.protocol + "//" + window.location.host + window.location.pathname + '#player?room=' + currentRoomId;
+            const playerUrl = window.location.protocol + "//" + window.location.host + window.location.pathname + '#player?room=' + currentRoomId + '&transparent=1';
             navigator.clipboard.writeText(playerUrl).then(() => {
                 alert("Player Link copied! Send this link to your remote PC and open it in a browser.");
             }).catch(err => {
@@ -1166,35 +1054,6 @@
                     alert("Player Link copied! Send this link to your remote PC and open it in a browser.");
                 } catch (err) {
                     alert("Copy failed. Here is your link:\n" + playerUrl);
-                }
-                document.body.removeChild(textArea);
-            });
-        };
-
-        // Separate link WITH transparent=1 — only for pasting into an OBS or
-        // vMix "Browser Source". Their compositors give real GPU alpha, so
-        // empty canvas areas actually let the scene behind show through.
-        // (This is also auto-detected without the param when opened directly
-        // inside a real OBS Browser Source or vMix.)
-        window.copyOBSLink = function () {
-            if (window.location.protocol === 'file:') {
-                alert("⚠️ Local File Detected! A web link won't work from a local file. Deploy this app to a URL first.");
-                return;
-            }
-            const obsUrl = window.location.protocol + "//" + window.location.host + window.location.pathname + '#player?room=' + currentRoomId + '&transparent=1';
-            navigator.clipboard.writeText(obsUrl).then(() => {
-                alert("OBS/vMix Link copied! Paste this into an OBS 'Browser Source' or vMix web input — background will be transparent there.");
-            }).catch(() => {
-                const textArea = document.createElement("textarea");
-                textArea.value = obsUrl;
-                document.body.appendChild(textArea);
-                textArea.focus();
-                textArea.select();
-                try {
-                    document.execCommand('copy');
-                    alert("OBS/vMix Link copied! Paste this into an OBS 'Browser Source' or vMix web input — background will be transparent there.");
-                } catch (err) {
-                    alert("Copy failed. Here is your link:\n" + obsUrl);
                 }
                 document.body.removeChild(textArea);
             });
@@ -1255,21 +1114,10 @@
         window.lastSelectedQuality = 1080;
 
         function registerMediaCall(call) {
-            const label = 'outgoing-' + (call.metadata ? call.metadata.layerId : call.peer);
-            attachIceDebug(call, label, (state, pc) => {
-                // Re-apply encoder params immediately whenever ICE (re)connects —
-                // this is what used to drift back to low/unstable FPS after a
-                // network hiccup, TURN relay switch, or reconnect.
-                if (state === 'connected' || state === 'completed') {
-                    refreshRelayFlag(pc);
-                    applyParams();
-                }
-            });
             activeMediaCalls.push(call);
             call.on('close', () => {
                 activeMediaCalls = activeMediaCalls.filter(c => c !== call);
                 if (call._fpsEnforceInterval) clearInterval(call._fpsEnforceInterval);
-                if (call._relayCheckInterval) clearInterval(call._relayCheckInterval);
             });
 
             const applyParams = () => {
@@ -1302,27 +1150,16 @@
                         const scale = nativeHeight / res.h;
                         parameters.encodings[0].scaleResolutionDownBy = Math.max(1, scale);
 
-                        // Set max bitrate per resolution to standard broadcast limits.
-                        // RELAY-AWARE: when the path is going through a TURN relay
-                        // (i.e. the two devices are on different networks), real
-                        // available bandwidth is far less predictable than on a LAN.
-                        // Pushing the same 6 Mbps ceiling used for LAN onto a relayed
-                        // path is exactly what causes the "worked fine locally, jumpy
-                        // FPS remotely" symptom — the encoder keeps trying for more
-                        // bitrate than the path can sustain, so the browser drops
-                        // frames instead of just lowering quality. We lower the
-                        // ceiling automatically on relayed connections so the
-                        // encoder settles into something the network can actually
-                        // sustain, which keeps FPS steady at the cost of some sharpness.
-                        const isRelayed = !!pc._isRelayed;
+                        // Set max bitrate per resolution to standard broadcast limits
+                        // Setting this too high (like 20Mbps) causes CPU encoding bottlenecks and network congestion!
                         if (res.h >= 1080) {
-                            parameters.encodings[0].maxBitrate = isRelayed ? 3000000 : 6000000;
+                            parameters.encodings[0].maxBitrate = 6000000; // 6 Mbps
                         } else if (res.h >= 720) {
-                            parameters.encodings[0].maxBitrate = isRelayed ? 1800000 : 3500000;
+                            parameters.encodings[0].maxBitrate = 3500000; // 3.5 Mbps
                         } else if (res.h >= 480) {
-                            parameters.encodings[0].maxBitrate = isRelayed ? 800000 : 1500000;
+                            parameters.encodings[0].maxBitrate = 1500000; // 1.5 Mbps
                         } else {
-                            parameters.encodings[0].maxBitrate = isRelayed ? 250000 : 400000;
+                            parameters.encodings[0].maxBitrate = 400000;  // 400 Kbps
                         }
 
                         // FIX: 'Zoom Style' Degradation - Allow the bitrate to drop extremely low (100 Kbps)
@@ -1348,24 +1185,19 @@
             };
 
             // FIX: Retry applyParams every 500ms until the PeerConnection is ready,
-            // then keep re-enforcing every 1s (tightened from 3s) so the encoder
-            // never drifts away from these settings for long.
+            // then keep re-enforcing every 3s to prevent browser drift back to low FPS.
             let attempts = 0;
             const checkPC = setInterval(() => {
                 if (call.peerConnection) {
                     clearInterval(checkPC);
-                    refreshRelayFlag(call.peerConnection);
                     // Apply immediately, then retry a few times to ensure it sticks
                     const retry = setInterval(() => {
                         applyParams();
                         attempts++;
                         if (attempts >= 6) clearInterval(retry); // stop after ~3s
                     }, 500);
-                    // After initial burst, enforce every 1s for the lifetime of the call
-                    call._fpsEnforceInterval = setInterval(applyParams, 1000);
-                    // Re-check relay status periodically — network path can change
-                    // mid-call (e.g. ICE restart, Wi-Fi <-> mobile data handover)
-                    call._relayCheckInterval = setInterval(() => refreshRelayFlag(call.peerConnection), 5000);
+                    // After initial burst, enforce every 3s for the lifetime of the call
+                    call._fpsEnforceInterval = setInterval(applyParams, 3000);
                 }
             }, 100);
             setTimeout(() => clearInterval(checkPC), 10000);
@@ -1526,8 +1358,6 @@
                     // Answer media calls from other controllers
                     peer.on('call', call => {
                         call.answer();
-                        attachIceDebug(call, 'incoming-controller-' + (call.metadata ? call.metadata.layerId : call.peer));
-                        applyReceiverJitterBuffer(call, 0.3);
                         window.activeMediaCalls = window.activeMediaCalls || [];
                         window.activeMediaCalls.push(call);
                         call.on('close', () => {
@@ -1946,96 +1776,6 @@
         }
 
         window.ytPlayers = window.ytPlayers || {};
-
-        // ==========================================
-        // YOUTUBE ASPECT-RATIO AUTO-FIT
-        // ==========================================
-        // YouTube's IFrame player always STRETCHES its video to fill whatever
-        // width/height you give it — it does NOT letterbox internally. That's
-        // why a vertical YouTube Short forced into a fixed 1920x1080 box came
-        // out squashed/distorted. Fix: look up the real aspect ratio via
-        // YouTube's public oEmbed endpoint (no API key needed), then size the
-        // player box to FIT (not fill) the 1920x1080 canvas — the parent
-        // .layer-element is already flex-centered, so this naturally centers
-        // the video with black bars on the sides/top-bottom, matching how
-        // vMix/OBS handle mismatched aspect ratios.
-        window._ytAspectCache = window._ytAspectCache || {};
-
-        function fetchYtAspectRatio(videoId) {
-            if (window._ytAspectCache[videoId]) return Promise.resolve(window._ytAspectCache[videoId]);
-            const url = `https://www.youtube.com/oembed?url=${encodeURIComponent('https://www.youtube.com/watch?v=' + videoId)}&format=json`;
-            return fetch(url)
-                .then(res => res.json())
-                .then(data => {
-                    const ratio = (data.width && data.height) ? (data.width / data.height) : (16 / 9);
-                    window._ytAspectCache[videoId] = ratio;
-                    return ratio;
-                })
-                .catch(() => 16 / 9); // fallback: assume standard widescreen if lookup fails
-        }
-
-        // Given a native aspect ratio (width/height), returns the pixel size
-        // that FITS inside a 1920x1080 reference box without cropping.
-        function computeFitSize(aspectRatio, boxW = 1920, boxH = 1080) {
-            const boxAspect = boxW / boxH;
-            if (aspectRatio >= boxAspect) {
-                return { w: boxW, h: Math.round(boxW / aspectRatio) };
-            } else {
-                return { w: Math.round(boxH * aspectRatio), h: boxH };
-            }
-        }
-
-        // ==========================================
-        // AUTO-FIT ANY VIDEO/CAMERA TO ITS REAL ASPECT RATIO
-        // ==========================================
-        // Uploaded files and cameras can be ANY aspect ratio (vertical phone
-        // video, square, widescreen...). The old code force-sized every
-        // <video> element to a fixed 1920x1080 box, so a vertical video got
-        // "cover"-cropped/zoomed to fill that wide box instead of showing
-        // full and upright. This makes the element size itself to its real
-        // aspect ratio automatically — vertical stays vertical, horizontal
-        // stays horizontal — no manual "Fit" click needed.
-        function autoFitVideoElement(vid, boxW = 1920, boxH = 1080) {
-            const apply = () => {
-                if (!vid.videoWidth || !vid.videoHeight) return;
-                const size = computeFitSize(vid.videoWidth / vid.videoHeight, boxW, boxH);
-                vid.style.width = size.w + 'px';
-                vid.style.height = size.h + 'px';
-            };
-            if (vid.readyState >= 1 && vid.videoWidth) {
-                apply();
-            } else {
-                vid.addEventListener('loadedmetadata', apply);
-            }
-            // Live streams (camera/screen-share) can report 0x0 briefly, then
-            // update — 'resize' fires whenever the track's real dimensions change.
-            vid.addEventListener('resize', apply);
-        }
-
-        // Sizes a YouTube container div to the video's real aspect ratio and
-        // (re)creates/resizes the player to match, instead of the old hard
-        // 1920x1080 that caused stretching.
-        function sizeYoutubeContainer(containerEl, videoId) {
-            // Start at a safe 16:9 default immediately (avoids a flash of
-            // wrong size while the oEmbed lookup is in flight)
-            containerEl.style.width = '1920px';
-            containerEl.style.height = '1080px';
-            fetchYtAspectRatio(videoId).then(ratio => {
-                const size = computeFitSize(ratio);
-                containerEl.style.width = size.w + 'px';
-                containerEl.style.height = size.h + 'px';
-                // If the player already exists, resize its underlying iframe too
-                const layerId = containerEl.id.replace('yt-player-ctrl-', '').replace('yt-player-play-', '');
-                const yt = window.ytPlayers && window.ytPlayers[layerId];
-                if (yt && typeof yt.getIframe === 'function') {
-                    const iframe = yt.getIframe();
-                    if (iframe) {
-                        iframe.style.width = size.w + 'px';
-                        iframe.style.height = size.h + 'px';
-                    }
-                }
-            });
-        }
 
         window.initYouTubePlayer = function (elementId, layerId, videoId, isController) {
             const init = () => {
@@ -2461,7 +2201,6 @@
                     vid.loop = true; vid.play().catch(e => e);
                     vid.style.width = '1920px'; vid.style.height = '1080px';
                     vid.draggable = false;
-                    autoFitVideoElement(vid);
                     el.appendChild(vid);
                     // Auto-activate the persistent Video Controller card
                     const fileName = layer.src ? layer.src.split('/').pop().split('?')[0].substring(0, 25) : 'Video';
@@ -2496,7 +2235,6 @@
                     vid.playsInline = true; vid.play().catch(e => e);
                     vid.style.width = '1920px'; vid.style.height = '1080px';
                     vid.draggable = false;
-                    autoFitVideoElement(vid);
                     el.appendChild(vid);
                 } else if (layer.type === 'youtube') {
                     const ytContainer = document.createElement('div');
@@ -2504,7 +2242,6 @@
                     ytContainer.style.width = '1920px';
                     ytContainer.style.height = '1080px';
                     el.appendChild(ytContainer);
-                    sizeYoutubeContainer(ytContainer, layer.src);
                     initYouTubePlayer(`yt-player-ctrl-${id}`, id, layer.src, true);
                 } else if (layer.type === 'iframe') {
                     const frame = document.createElement('iframe');
@@ -2547,7 +2284,6 @@
             el.style.top = `${layer.y}px`;
             el.style.transform = `translate(-50%, -50%) scale(${layer.scale})`;
             el.style.zIndex = layer.zIndex;
-            el.classList.toggle('fit-contain', layer.fitMode === 'contain');
 
             if (layer.type === 'text') {
                 const txtNode = el.querySelector('.text-layer');
@@ -3162,22 +2898,10 @@
                 let changed = false;
 
                 if (e.ctrlKey && (e.key === 'f' || e.key === 'F')) {
-                    // "Fit to Frame" — like vMix/OBS: center the layer and show
-                    // the WHOLE video/image without cropping (letterbox/pillarbox
-                    // instead of cover-crop). Fixes vertical/odd-aspect sources
-                    // (e.g. YouTube Shorts, portrait phone video) looking
-                    // squashed or cropped.
                     layer.x = 960;
                     layer.y = 540;
                     layer.scale = 1;
-                    if (layer.type === 'camera' || layer.type === 'video' || layer.type === 'image') {
-                        layer.fitMode = 'contain';
-                    }
                     changed = true;
-                    e.preventDefault();
-                    renderControllerLayer(window.selectedLayerId);
-                    broadcastData({ type: 'UPDATE_LAYER', id: layer.id, changes: { x: layer.x, y: layer.y, scale: layer.scale, fitMode: layer.fitMode } });
-                    return;
                 } else {
                     switch (e.key) {
                         case 'ArrowLeft': layer.x -= step; changed = true; break;
@@ -3320,32 +3044,10 @@
         }
 
         // Start a rendering loop that draws a video source onto a canvas at the active resolution
-        // Canvas-mode (below 1080p) needs the same real-aspect-ratio fit as
-        // the direct <video> element — otherwise a vertical video gets
-        // stretched to fill the full 16:9 canvas. Falls back to the full box
-        // only until the source video's real dimensions are known.
-        function computeCanvasFitSize(sourceVideo) {
-            if (sourceVideo.videoWidth && sourceVideo.videoHeight) {
-                return computeFitSize(sourceVideo.videoWidth / sourceVideo.videoHeight, activeRes.w, activeRes.h);
-            }
-            return { w: activeRes.w, h: activeRes.h };
-        }
-
-        // Sets BOTH the canvas's internal pixel resolution (for drawing) and
-        // its CSS display size — the .quality-canvas class forces a fixed
-        // 1920x1080 display size, so without setting inline style too, the
-        // correctly-sized drawing would just get stretched back out visually.
-        function setCanvasFitSize(canvas, size) {
-            canvas.width = size.w;
-            canvas.height = size.h;
-            canvas.style.width = size.w + 'px';
-            canvas.style.height = size.h + 'px';
-        }
-
         function startQualityRenderLoop(layerId, sourceVideo, displayCanvas) {
             const ctx = displayCanvas.getContext('2d');
-            let fitSize = computeCanvasFitSize(sourceVideo);
-            setCanvasFitSize(displayCanvas, fitSize);
+            displayCanvas.width = activeRes.w;
+            displayCanvas.height = activeRes.h;
 
             window._qualityCanvases[layerId] = { source: sourceVideo, canvas: displayCanvas, ctx: ctx, active: true };
 
@@ -3354,12 +3056,6 @@
                 if (!entry || !entry.active) return;
                 // Only draw if canvas mode is needed (below 1080p)
                 if (isCanvasModeNeeded() && !sourceVideo.paused && !sourceVideo.ended && sourceVideo.readyState >= 2) {
-                    // Re-fit if the source's real dimensions weren't known yet
-                    // at first draw (common right after a stream/file loads)
-                    const nowFit = computeCanvasFitSize(sourceVideo);
-                    if (displayCanvas.width !== nowFit.w || displayCanvas.height !== nowFit.h) {
-                        setCanvasFitSize(displayCanvas, nowFit);
-                    }
                     ctx.drawImage(sourceVideo, 0, 0, displayCanvas.width, displayCanvas.height);
                 }
                 requestAnimationFrame(drawFrame);
@@ -3388,17 +3084,14 @@
             Object.keys(window._qualityCanvases).forEach(id => {
                 const entry = window._qualityCanvases[id];
                 if (entry && entry.canvas) {
-                    setCanvasFitSize(entry.canvas, computeCanvasFitSize(entry.source));
+                    entry.canvas.width = activeRes.w;
+                    entry.canvas.height = activeRes.h;
                     if (needCanvas && !entry.active) {
                         entry.active = true;
                         // Restart render loop
                         function drawFrame() {
                             if (!entry.active || !window._qualityCanvases[id]) return;
                             if (isCanvasModeNeeded() && !entry.source.paused && !entry.source.ended && entry.source.readyState >= 2) {
-                                const nowFit = computeCanvasFitSize(entry.source);
-                                if (entry.canvas.width !== nowFit.w || entry.canvas.height !== nowFit.h) {
-                                    setCanvasFitSize(entry.canvas, nowFit);
-                                }
                                 entry.ctx.drawImage(entry.source, 0, 0, entry.canvas.width, entry.canvas.height);
                             }
                             requestAnimationFrame(drawFrame);
@@ -3512,35 +3205,12 @@
                 });
             }
 
-            // Show a visible banner instead of a silent black screen when the
-            // media relay (TURN) fails — helps you tell "no connection" apart
-            // from "connected but frozen/black".
-            window.onIceStateChange = function (state, label) {
-                let banner = document.getElementById('ice-status-banner');
-                if (!banner) {
-                    banner = document.createElement('div');
-                    banner.id = 'ice-status-banner';
-                    banner.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:99999;padding:8px 16px;border-radius:8px;font-family:Inter,sans-serif;font-size:13px;font-weight:600;display:none;';
-                    document.body.appendChild(banner);
-                }
-                if (state === 'failed' || state === 'disconnected') {
-                    banner.textContent = '⚠ Media relay connection ' + state + ' (' + label + ') — check TURN server credentials';
-                    banner.style.background = '#7f1d1d';
-                    banner.style.color = '#fecaca';
-                    banner.style.display = 'block';
-                } else if (state === 'connected' || state === 'completed') {
-                    banner.style.display = 'none';
-                }
-            };
-
             peer = new Peer(peerConfig);
 
             peer.on('open', () => {
                 // Receive incoming Camera Streams & Streamed Files from Host
                 peer.on('call', call => {
                     call.answer();
-                    attachIceDebug(call, 'incoming-player-' + (call.metadata ? call.metadata.layerId : call.peer));
-                    applyReceiverJitterBuffer(call, 0.3);
 
                     window.activePlayerCalls = window.activePlayerCalls || [];
                     window.activePlayerCalls.push(call);
@@ -3790,7 +3460,6 @@
                     }
 
                     el.appendChild(vid);
-                    autoFitVideoElement(vid);
                     // Quality canvas (only used below 1080p)
                     const qCanvas = document.createElement('canvas');
                     qCanvas.className = 'quality-canvas';
@@ -3825,7 +3494,6 @@
                     if (layer.audio) { vid.volume = layer.audio.volume; vid.muted = layer.audio.muted; }
                     vid.play().catch(e => console.log("Autoplay waiting..."));
                     vid.draggable = false;
-                    autoFitVideoElement(vid);
                     el.appendChild(vid);
                     // Quality canvas (only used below 1080p)
                     const qCanvas = document.createElement('canvas');
@@ -3840,7 +3508,6 @@
                     ytContainer.style.width = '1920px';
                     ytContainer.style.height = '1080px';
                     el.appendChild(ytContainer);
-                    sizeYoutubeContainer(ytContainer, layer.src);
                     initYouTubePlayer(`yt-player-play-${id}`, id, layer.src, false);
                 } else if (layer.type === 'iframe') {
                     const frame = document.createElement('iframe');
@@ -3868,7 +3535,6 @@
             el.style.top = `${layer.y}px`;
             el.style.transform = `translate(-50%, -50%) scale(${layer.scale})`;
             if (layer.zIndex !== undefined) el.style.zIndex = layer.zIndex;
-            el.classList.toggle('fit-contain', layer.fitMode === 'contain');
 
             if (layer.type === 'text') {
                 const txtNode = el.querySelector('.text-layer');
