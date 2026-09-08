@@ -554,6 +554,15 @@
                     </svg>
                     <span>Copy Remote Link</span>
                 </button>
+                <button onclick="copyOBSLink()" title="Transparent background link — paste into OBS/vMix Browser Source"
+                    class="flex items-center gap-1.5 sm:gap-2 bg-purple-600/20 hover:bg-purple-600/40 text-purple-400 border border-purple-600/50 px-2.5 sm:px-3 py-1.5 rounded transition text-xs font-bold uppercase tracking-wider">
+                    <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1">
+                        </path>
+                    </svg>
+                    <span>Copy OBS/vMix Link</span>
+                </button>
                 <div
                     class="bg-zinc-950 px-2.5 sm:px-3 py-1.5 rounded border border-zinc-800 shadow-inner flex items-center">
                     <span class="text-[10px] text-zinc-500 font-bold uppercase tracking-widest mr-1.5">Link ID:</span>
@@ -1136,7 +1145,13 @@
                 return;
             }
 
-            const playerUrl = window.location.protocol + "//" + window.location.host + window.location.pathname + '#player?room=' + currentRoomId + '&transparent=1';
+            // NOTE: no &transparent=1 here — this link is for a normal remote
+            // viewer (phone, PC browser, etc). Transparent mode makes empty
+            // canvas areas render as undefined/black in a plain browser tab
+            // since there's nothing behind the page for it to show through —
+            // that only makes sense inside OBS/vMix's own compositor. Use
+            // "Copy OBS/vMix Link" for that instead.
+            const playerUrl = window.location.protocol + "//" + window.location.host + window.location.pathname + '#player?room=' + currentRoomId;
             navigator.clipboard.writeText(playerUrl).then(() => {
                 alert("Player Link copied! Send this link to your remote PC and open it in a browser.");
             }).catch(err => {
@@ -1151,6 +1166,35 @@
                     alert("Player Link copied! Send this link to your remote PC and open it in a browser.");
                 } catch (err) {
                     alert("Copy failed. Here is your link:\n" + playerUrl);
+                }
+                document.body.removeChild(textArea);
+            });
+        };
+
+        // Separate link WITH transparent=1 — only for pasting into an OBS or
+        // vMix "Browser Source". Their compositors give real GPU alpha, so
+        // empty canvas areas actually let the scene behind show through.
+        // (This is also auto-detected without the param when opened directly
+        // inside a real OBS Browser Source or vMix.)
+        window.copyOBSLink = function () {
+            if (window.location.protocol === 'file:') {
+                alert("⚠️ Local File Detected! A web link won't work from a local file. Deploy this app to a URL first.");
+                return;
+            }
+            const obsUrl = window.location.protocol + "//" + window.location.host + window.location.pathname + '#player?room=' + currentRoomId + '&transparent=1';
+            navigator.clipboard.writeText(obsUrl).then(() => {
+                alert("OBS/vMix Link copied! Paste this into an OBS 'Browser Source' or vMix web input — background will be transparent there.");
+            }).catch(() => {
+                const textArea = document.createElement("textarea");
+                textArea.value = obsUrl;
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                try {
+                    document.execCommand('copy');
+                    alert("OBS/vMix Link copied! Paste this into an OBS 'Browser Source' or vMix web input — background will be transparent there.");
+                } catch (err) {
+                    alert("Copy failed. Here is your link:\n" + obsUrl);
                 }
                 document.body.removeChild(textArea);
             });
