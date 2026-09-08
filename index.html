@@ -186,6 +186,12 @@
             max-width: none;
             flex-shrink: 0;
         }
+        /* "Fit to Frame" mode (Ctrl+F) — shows the whole video without cropping,
+           letterboxing/pillarboxing instead, just like vMix/OBS "Fit" option. */
+        .layer-element.fit-contain video {
+            object-fit: contain !important;
+            background: #000;
+        }
         .layer-element img,
         .layer-element iframe {
             object-fit: contain;
@@ -1897,6 +1903,96 @@
 
         window.ytPlayers = window.ytPlayers || {};
 
+        // ==========================================
+        // YOUTUBE ASPECT-RATIO AUTO-FIT
+        // ==========================================
+        // YouTube's IFrame player always STRETCHES its video to fill whatever
+        // width/height you give it — it does NOT letterbox internally. That's
+        // why a vertical YouTube Short forced into a fixed 1920x1080 box came
+        // out squashed/distorted. Fix: look up the real aspect ratio via
+        // YouTube's public oEmbed endpoint (no API key needed), then size the
+        // player box to FIT (not fill) the 1920x1080 canvas — the parent
+        // .layer-element is already flex-centered, so this naturally centers
+        // the video with black bars on the sides/top-bottom, matching how
+        // vMix/OBS handle mismatched aspect ratios.
+        window._ytAspectCache = window._ytAspectCache || {};
+
+        function fetchYtAspectRatio(videoId) {
+            if (window._ytAspectCache[videoId]) return Promise.resolve(window._ytAspectCache[videoId]);
+            const url = `https://www.youtube.com/oembed?url=${encodeURIComponent('https://www.youtube.com/watch?v=' + videoId)}&format=json`;
+            return fetch(url)
+                .then(res => res.json())
+                .then(data => {
+                    const ratio = (data.width && data.height) ? (data.width / data.height) : (16 / 9);
+                    window._ytAspectCache[videoId] = ratio;
+                    return ratio;
+                })
+                .catch(() => 16 / 9); // fallback: assume standard widescreen if lookup fails
+        }
+
+        // Given a native aspect ratio (width/height), returns the pixel size
+        // that FITS inside a 1920x1080 reference box without cropping.
+        function computeFitSize(aspectRatio, boxW = 1920, boxH = 1080) {
+            const boxAspect = boxW / boxH;
+            if (aspectRatio >= boxAspect) {
+                return { w: boxW, h: Math.round(boxW / aspectRatio) };
+            } else {
+                return { w: Math.round(boxH * aspectRatio), h: boxH };
+            }
+        }
+
+        // ==========================================
+        // AUTO-FIT ANY VIDEO/CAMERA TO ITS REAL ASPECT RATIO
+        // ==========================================
+        // Uploaded files and cameras can be ANY aspect ratio (vertical phone
+        // video, square, widescreen...). The old code force-sized every
+        // <video> element to a fixed 1920x1080 box, so a vertical video got
+        // "cover"-cropped/zoomed to fill that wide box instead of showing
+        // full and upright. This makes the element size itself to its real
+        // aspect ratio automatically — vertical stays vertical, horizontal
+        // stays horizontal — no manual "Fit" click needed.
+        function autoFitVideoElement(vid, boxW = 1920, boxH = 1080) {
+            const apply = () => {
+                if (!vid.videoWidth || !vid.videoHeight) return;
+                const size = computeFitSize(vid.videoWidth / vid.videoHeight, boxW, boxH);
+                vid.style.width = size.w + 'px';
+                vid.style.height = size.h + 'px';
+            };
+            if (vid.readyState >= 1 && vid.videoWidth) {
+                apply();
+            } else {
+                vid.addEventListener('loadedmetadata', apply);
+            }
+            // Live streams (camera/screen-share) can report 0x0 briefly, then
+            // update — 'resize' fires whenever the track's real dimensions change.
+            vid.addEventListener('resize', apply);
+        }
+
+        // Sizes a YouTube container div to the video's real aspect ratio and
+        // (re)creates/resizes the player to match, instead of the old hard
+        // 1920x1080 that caused stretching.
+        function sizeYoutubeContainer(containerEl, videoId) {
+            // Start at a safe 16:9 default immediately (avoids a flash of
+            // wrong size while the oEmbed lookup is in flight)
+            containerEl.style.width = '1920px';
+            containerEl.style.height = '1080px';
+            fetchYtAspectRatio(videoId).then(ratio => {
+                const size = computeFitSize(ratio);
+                containerEl.style.width = size.w + 'px';
+                containerEl.style.height = size.h + 'px';
+                // If the player already exists, resize its underlying iframe too
+                const layerId = containerEl.id.replace('yt-player-ctrl-', '').replace('yt-player-play-', '');
+                const yt = window.ytPlayers && window.ytPlayers[layerId];
+                if (yt && typeof yt.getIframe === 'function') {
+                    const iframe = yt.getIframe();
+                    if (iframe) {
+                        iframe.style.width = size.w + 'px';
+                        iframe.style.height = size.h + 'px';
+                    }
+                }
+            });
+        }
+
         window.initYouTubePlayer = function (elementId, layerId, videoId, isController) {
             const init = () => {
                 window.ytPlayers[layerId] = new YT.Player(elementId, {
@@ -2321,6 +2417,7 @@
                     vid.loop = true; vid.play().catch(e => e);
                     vid.style.width = '1920px'; vid.style.height = '1080px';
                     vid.draggable = false;
+                    autoFitVideoElement(vid);
                     el.appendChild(vid);
                     // Auto-activate the persistent Video Controller card
                     const fileName = layer.src ? layer.src.split('/').pop().split('?')[0].substring(0, 25) : 'Video';
@@ -2355,6 +2452,7 @@
                     vid.playsInline = true; vid.play().catch(e => e);
                     vid.style.width = '1920px'; vid.style.height = '1080px';
                     vid.draggable = false;
+                    autoFitVideoElement(vid);
                     el.appendChild(vid);
                 } else if (layer.type === 'youtube') {
                     const ytContainer = document.createElement('div');
@@ -2362,6 +2460,7 @@
                     ytContainer.style.width = '1920px';
                     ytContainer.style.height = '1080px';
                     el.appendChild(ytContainer);
+                    sizeYoutubeContainer(ytContainer, layer.src);
                     initYouTubePlayer(`yt-player-ctrl-${id}`, id, layer.src, true);
                 } else if (layer.type === 'iframe') {
                     const frame = document.createElement('iframe');
@@ -2404,6 +2503,7 @@
             el.style.top = `${layer.y}px`;
             el.style.transform = `translate(-50%, -50%) scale(${layer.scale})`;
             el.style.zIndex = layer.zIndex;
+            el.classList.toggle('fit-contain', layer.fitMode === 'contain');
 
             if (layer.type === 'text') {
                 const txtNode = el.querySelector('.text-layer');
@@ -3018,10 +3118,22 @@
                 let changed = false;
 
                 if (e.ctrlKey && (e.key === 'f' || e.key === 'F')) {
+                    // "Fit to Frame" — like vMix/OBS: center the layer and show
+                    // the WHOLE video/image without cropping (letterbox/pillarbox
+                    // instead of cover-crop). Fixes vertical/odd-aspect sources
+                    // (e.g. YouTube Shorts, portrait phone video) looking
+                    // squashed or cropped.
                     layer.x = 960;
                     layer.y = 540;
                     layer.scale = 1;
+                    if (layer.type === 'camera' || layer.type === 'video' || layer.type === 'image') {
+                        layer.fitMode = 'contain';
+                    }
                     changed = true;
+                    e.preventDefault();
+                    renderControllerLayer(window.selectedLayerId);
+                    broadcastData({ type: 'UPDATE_LAYER', id: layer.id, changes: { x: layer.x, y: layer.y, scale: layer.scale, fitMode: layer.fitMode } });
+                    return;
                 } else {
                     switch (e.key) {
                         case 'ArrowLeft': layer.x -= step; changed = true; break;
@@ -3164,10 +3276,32 @@
         }
 
         // Start a rendering loop that draws a video source onto a canvas at the active resolution
+        // Canvas-mode (below 1080p) needs the same real-aspect-ratio fit as
+        // the direct <video> element — otherwise a vertical video gets
+        // stretched to fill the full 16:9 canvas. Falls back to the full box
+        // only until the source video's real dimensions are known.
+        function computeCanvasFitSize(sourceVideo) {
+            if (sourceVideo.videoWidth && sourceVideo.videoHeight) {
+                return computeFitSize(sourceVideo.videoWidth / sourceVideo.videoHeight, activeRes.w, activeRes.h);
+            }
+            return { w: activeRes.w, h: activeRes.h };
+        }
+
+        // Sets BOTH the canvas's internal pixel resolution (for drawing) and
+        // its CSS display size — the .quality-canvas class forces a fixed
+        // 1920x1080 display size, so without setting inline style too, the
+        // correctly-sized drawing would just get stretched back out visually.
+        function setCanvasFitSize(canvas, size) {
+            canvas.width = size.w;
+            canvas.height = size.h;
+            canvas.style.width = size.w + 'px';
+            canvas.style.height = size.h + 'px';
+        }
+
         function startQualityRenderLoop(layerId, sourceVideo, displayCanvas) {
             const ctx = displayCanvas.getContext('2d');
-            displayCanvas.width = activeRes.w;
-            displayCanvas.height = activeRes.h;
+            let fitSize = computeCanvasFitSize(sourceVideo);
+            setCanvasFitSize(displayCanvas, fitSize);
 
             window._qualityCanvases[layerId] = { source: sourceVideo, canvas: displayCanvas, ctx: ctx, active: true };
 
@@ -3176,6 +3310,12 @@
                 if (!entry || !entry.active) return;
                 // Only draw if canvas mode is needed (below 1080p)
                 if (isCanvasModeNeeded() && !sourceVideo.paused && !sourceVideo.ended && sourceVideo.readyState >= 2) {
+                    // Re-fit if the source's real dimensions weren't known yet
+                    // at first draw (common right after a stream/file loads)
+                    const nowFit = computeCanvasFitSize(sourceVideo);
+                    if (displayCanvas.width !== nowFit.w || displayCanvas.height !== nowFit.h) {
+                        setCanvasFitSize(displayCanvas, nowFit);
+                    }
                     ctx.drawImage(sourceVideo, 0, 0, displayCanvas.width, displayCanvas.height);
                 }
                 requestAnimationFrame(drawFrame);
@@ -3204,14 +3344,17 @@
             Object.keys(window._qualityCanvases).forEach(id => {
                 const entry = window._qualityCanvases[id];
                 if (entry && entry.canvas) {
-                    entry.canvas.width = activeRes.w;
-                    entry.canvas.height = activeRes.h;
+                    setCanvasFitSize(entry.canvas, computeCanvasFitSize(entry.source));
                     if (needCanvas && !entry.active) {
                         entry.active = true;
                         // Restart render loop
                         function drawFrame() {
                             if (!entry.active || !window._qualityCanvases[id]) return;
                             if (isCanvasModeNeeded() && !entry.source.paused && !entry.source.ended && entry.source.readyState >= 2) {
+                                const nowFit = computeCanvasFitSize(entry.source);
+                                if (entry.canvas.width !== nowFit.w || entry.canvas.height !== nowFit.h) {
+                                    setCanvasFitSize(entry.canvas, nowFit);
+                                }
                                 entry.ctx.drawImage(entry.source, 0, 0, entry.canvas.width, entry.canvas.height);
                             }
                             requestAnimationFrame(drawFrame);
@@ -3603,6 +3746,7 @@
                     }
 
                     el.appendChild(vid);
+                    autoFitVideoElement(vid);
                     // Quality canvas (only used below 1080p)
                     const qCanvas = document.createElement('canvas');
                     qCanvas.className = 'quality-canvas';
@@ -3637,6 +3781,7 @@
                     if (layer.audio) { vid.volume = layer.audio.volume; vid.muted = layer.audio.muted; }
                     vid.play().catch(e => console.log("Autoplay waiting..."));
                     vid.draggable = false;
+                    autoFitVideoElement(vid);
                     el.appendChild(vid);
                     // Quality canvas (only used below 1080p)
                     const qCanvas = document.createElement('canvas');
@@ -3651,6 +3796,7 @@
                     ytContainer.style.width = '1920px';
                     ytContainer.style.height = '1080px';
                     el.appendChild(ytContainer);
+                    sizeYoutubeContainer(ytContainer, layer.src);
                     initYouTubePlayer(`yt-player-play-${id}`, id, layer.src, false);
                 } else if (layer.type === 'iframe') {
                     const frame = document.createElement('iframe');
@@ -3678,6 +3824,7 @@
             el.style.top = `${layer.y}px`;
             el.style.transform = `translate(-50%, -50%) scale(${layer.scale})`;
             if (layer.zIndex !== undefined) el.style.zIndex = layer.zIndex;
+            el.classList.toggle('fit-contain', layer.fitMode === 'contain');
 
             if (layer.type === 'text') {
                 const txtNode = el.querySelector('.text-layer');
