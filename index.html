@@ -934,6 +934,23 @@
         window.localStreams = {};
         window.remoteStreams = {};
 
+        let cachedDummyStream = null;
+        function getDummyStream() {
+            if (cachedDummyStream) return cachedDummyStream;
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = 2;
+                canvas.height = 2;
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = '#000000';
+                ctx.fillRect(0, 0, 2, 2);
+                cachedDummyStream = canvas.captureStream(1);
+            } catch (e) {
+                cachedDummyStream = new MediaStream();
+            }
+            return cachedDummyStream;
+        }
+
         // PeerJS Config with NAT Traversal (STUN & TURN Relays) for Internet / Cross-Network Connections
         const iceServersList = [
             // Standard Public STUN Servers
@@ -1014,7 +1031,13 @@
             }
         ];
 
+        const isHttps = window.location.protocol === 'https:';
+
         const peerConfig = {
+            host: '0.peerjs.com',
+            port: 443,
+            path: '/',
+            secure: isHttps || window.location.protocol !== 'http:',
             config: {
                 iceServers: iceServersList,
                 iceCandidatePoolSize: 10,
@@ -1035,6 +1058,23 @@
                 localStorage.setItem('broadcast_studio_id', id);
             }
             return id;
+        }
+
+        function getRoomIdFromUrl() {
+            try {
+                // 1. Check window.location.search (?room=12345)
+                const searchParams = new URLSearchParams(window.location.search);
+                if (searchParams.has('room') && searchParams.get('room')) {
+                    return searchParams.get('room');
+                }
+
+                // 2. Check window.location.hash (#player?room=12345 or #controller?room=12345)
+                if (window.location.hash) {
+                    const match = window.location.hash.match(/[?&]room=([^&]+)/);
+                    if (match && match[1]) return match[1];
+                }
+            } catch (e) { }
+            return null;
         }
 
         window.saveStudioId = function (val) {
@@ -1058,10 +1098,10 @@
                 if (warning) warning.style.display = 'block';
             }
 
-            // Extract room ID from URL if provided, otherwise fallback to local persistent ID
-            if (hash.includes('?room=')) {
-                const parts = hash.split('?room=');
-                currentRoomId = parts[1].split('&')[0];
+            // Robust Room ID extraction for Vercel / HTTPS links
+            const urlRoom = getRoomIdFromUrl();
+            if (urlRoom) {
+                currentRoomId = urlRoom;
             } else {
                 currentRoomId = getStudioId();
             }
@@ -1096,20 +1136,26 @@
             btn.className = 'quality-btn px-4 py-2 rounded-lg text-sm font-semibold border transition-all bg-blue-600 border-blue-500 text-white shadow-[0_0_15px_rgba(37,99,235,0.4)]';
         };
 
-        window.openPlayer = () => window.open(window.location.pathname + '#player?room=' + getStudioId() + '&quality=' + selectedQuality, '_blank');
-        window.openController = () => window.location.hash = '#controller?room=' + getStudioId();
+        window.openPlayer = () => {
+            const id = currentRoomId || getStudioId();
+            window.open(window.location.origin + window.location.pathname + '?room=' + id + '#player', '_blank');
+        };
+
+        window.openController = () => {
+            const id = currentRoomId || getStudioId();
+            window.location.href = window.location.origin + window.location.pathname + '?room=' + id + '#controller';
+        };
 
         window.copyPlayerLink = function () {
             if (window.location.protocol === 'file:') {
-                alert("⚠️ Local File Detected!\n\nYou are running this directly from your hard drive (file://). A web link won't work on another device.\n\nTo connect your mobile phone:\n1. Send this HTML file to your phone.\n2. Open it in your mobile browser.\n3. Manually type your Studio ID: " + currentRoomId);
+                alert("⚠️ Local File Detected!\n\nYou are running this directly from your hard drive (file://). A web link won't work on another device.\n\nTo connect another device:\n1. Copy this HTML file to that device.\n2. Open it in a browser.\n3. Manually type your Studio ID: " + currentRoomId);
                 return;
             }
 
-            const playerUrl = window.location.protocol + "//" + window.location.host + window.location.pathname + '#player?room=' + currentRoomId + '&transparent=1';
+            const playerUrl = window.location.origin + window.location.pathname + '?room=' + currentRoomId + '#player';
             navigator.clipboard.writeText(playerUrl).then(() => {
-                alert("Player Link copied! Send this link to your remote PC and open it in a browser.");
+                alert("✅ Player Link copied to clipboard!\n\nSend this link to your remote device on any network:\n" + playerUrl);
             }).catch(err => {
-                // Fallback for older browsers / iframe restrictions
                 const textArea = document.createElement("textarea");
                 textArea.value = playerUrl;
                 document.body.appendChild(textArea);
@@ -1117,9 +1163,9 @@
                 textArea.select();
                 try {
                     document.execCommand('copy');
-                    alert("Player Link copied! Send this link to your remote PC and open it in a browser.");
-                } catch (err) {
-                    alert("Copy failed. Here is your link:\n" + playerUrl);
+                    alert("✅ Player Link copied to clipboard!\n\nSend this link to your remote device on any network:\n" + playerUrl);
+                } catch (e) {
+                    prompt("Copy this URL manually for remote device:", playerUrl);
                 }
                 document.body.removeChild(textArea);
             });
@@ -1436,7 +1482,7 @@
 
                     // Answer media calls from other controllers
                     peer.on('call', call => {
-                        call.answer();
+                        call.answer(getDummyStream());
                         window.activeMediaCalls = window.activeMediaCalls || [];
                         window.activeMediaCalls.push(call);
                         call.on('close', () => {
@@ -1539,6 +1585,7 @@
             startMediaSyncLoop();
             startHostFPSMonitor();
             startHostMediaHealthCheck();
+            startHostFrameStreamingLoop();
             initDevices();
         }
 
@@ -1684,6 +1731,36 @@
                     });
                 });
             }, 3000);
+        }
+
+        function startHostFrameStreamingLoop() {
+            const frameCanvas = document.createElement('canvas');
+            frameCanvas.width = 640;
+            frameCanvas.height = 360;
+            const frameCtx = frameCanvas.getContext('2d', { alpha: false });
+
+            setInterval(() => {
+                if (!p2pConnections || p2pConnections.length === 0 || !window.localStreams || Object.keys(window.localStreams).length === 0) return;
+
+                const playerFpsEl = document.getElementById('player-fps');
+                const currentPlayerFps = playerFpsEl ? parseInt(playerFpsEl.innerText || '0') : 0;
+
+                // If player FPS is 0 or WebRTC media stream is non-responsive across networks, broadcast fallback JPEG frames over DataChannel
+                if (currentPlayerFps === 0) {
+                    Object.keys(window.localStreams).forEach(layerId => {
+                        const el = document.getElementById(`ctrl-${layerId}`);
+                        const media = el ? el.querySelector('video') : null;
+
+                        if (media && media.readyState >= 2) {
+                            try {
+                                drawAspectFitVideo(frameCtx, media, 640, 360);
+                                const frameData = frameCanvas.toDataURL('image/jpeg', 0.5);
+                                broadcastData({ type: 'FALLBACK_FRAME', layerId: layerId, frame: frameData });
+                            } catch (e) { }
+                        }
+                    });
+                }
+            }, 40);
         }
 
         function startMediaSyncLoop() {
@@ -3393,7 +3470,7 @@
             peer.on('open', () => {
                 // Receive incoming Camera Streams & Streamed Files from Host
                 peer.on('call', call => {
-                    call.answer();
+                    call.answer(getDummyStream());
 
                     window.activePlayerCalls = window.activePlayerCalls || [];
                     window.activePlayerCalls.push(call);
@@ -3548,6 +3625,29 @@
                                 }
                             }
                         });
+                    }
+                    else if (msg.type === 'FALLBACK_FRAME') {
+                        const layerId = msg.layerId;
+                        const el = document.getElementById(`play-${layerId}`);
+                        if (el) {
+                            let fallbackImg = el.querySelector('.fallback-frame-img');
+                            if (!fallbackImg) {
+                                fallbackImg = document.createElement('img');
+                                fallbackImg.className = 'fallback-frame-img';
+                                fallbackImg.style.cssText = 'position:absolute; inset:0; width:100%; height:100%; object-fit:contain; z-index:100; pointer-events:none;';
+                                el.appendChild(fallbackImg);
+                            }
+                            
+                            const vid = el.querySelector('video');
+                            const isVideoActive = vid && !vid.paused && vid.readyState >= 3 && vid.currentTime > 0;
+                            
+                            if (!isVideoActive) {
+                                fallbackImg.src = msg.frame;
+                                fallbackImg.style.display = 'block';
+                            } else {
+                                fallbackImg.style.display = 'none';
+                            }
+                        }
                     }
                 };
 
