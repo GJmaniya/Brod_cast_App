@@ -52,13 +52,13 @@
             pointer-events: none;
         }
 
-        /* When canvas mode is active (lower quality), hide video and show canvas */
+        /* When canvas mode is active (lower quality), keep video at 1px so browser decodes frames for canvas */
         .canvas-mode .quality-source-video {
             position: absolute !important;
-            opacity: 0 !important;
+            opacity: 0.001 !important;
             pointer-events: none !important;
-            width: 0 !important;
-            height: 0 !important;
+            width: 1px !important;
+            height: 1px !important;
         }
 
         .quality-canvas {
@@ -1512,6 +1512,15 @@
                     });
                 });
 
+                peer.on('disconnected', () => {
+                    console.warn("[Host Peer] Disconnected from signaling server. Reconnecting...");
+                    if (peer && !peer.destroyed) {
+                        setTimeout(() => {
+                            try { peer.reconnect(); } catch (e) { }
+                        }, 1000);
+                    }
+                });
+
                 peer.on('error', (err) => {
                     if (err.type !== 'peer-unavailable') console.error(err);
 
@@ -2202,67 +2211,65 @@
                                 let finalStream;
 
                                 if (layer.type === 'video') {
-                                    // CANVAS DOWNSCALING PIPELINE WITH BACKGROUND TAB FALLBACK
-                                    const renderCanvas = document.createElement('canvas');
-                                    renderCanvas.width = 1920;
-                                    renderCanvas.height = 1080;
-                                    const ctx = renderCanvas.getContext('2d', { alpha: false });
-
-                                    // Force video playback in preview
-                                    media.play().catch(e => { });
-
-                                    // Paint initial frame immediately if video is loaded
-                                    if (media.readyState >= 2) {
-                                        try { drawAspectFitVideo(ctx, media, 1920, 1080); } catch (e) { }
-                                    }
-
-                                    const drawFrame = () => {
-                                        if (media.readyState >= 2 && !media.paused && !media.ended) {
-                                            try { drawAspectFitVideo(ctx, media, 1920, 1080); } catch (e) { }
-                                        }
-                                    };
-
-                                    const drawLoop = () => {
-                                        drawFrame();
-                                        if (window.layers[layer.id]) {
-                                            requestAnimationFrame(drawLoop);
-                                        }
-                                    };
-                                    requestAnimationFrame(drawLoop);
-
-                                    // FIX: Timer fallback ensures canvas continues updating even when the browser tab is backgrounded/minimized!
-                                    const timerId = setInterval(() => {
-                                        if (!window.layers[layer.id]) {
-                                            clearInterval(timerId);
-                                            return;
-                                        }
-                                        drawFrame();
-                                    }, 33); // ~30 FPS fallback timer
-
-                                    // Capture pristine 1080p stream at STRICTLY 30 FPS
-                                    const videoStream = renderCanvas.captureStream(30);
-
-                                    // Extract Audio from the original media
-                                    let audioStream;
+                                    // Try native HTML5 Video captureStream first (Direct Hardware Decoder Stream)
+                                    let nativeStream = null;
                                     try {
-                                        if (media.captureStream) audioStream = media.captureStream();
-                                        else if (media.mozCaptureStream) audioStream = media.mozCaptureStream();
+                                        if (media.captureStream) nativeStream = media.captureStream(30);
+                                        else if (media.mozCaptureStream) nativeStream = media.mozCaptureStream(30);
                                     } catch (err) { }
 
-                                    const audioTracks = audioStream ? audioStream.getAudioTracks() : [];
-                                    const videoTrack = videoStream ? videoStream.getVideoTracks()[0] : null;
-                                    if (videoTrack) {
-                                        videoTrack.enabled = true;
-                                        videoTrack.contentHint = 'motion';
+                                    if (nativeStream && nativeStream.getVideoTracks().length > 0) {
+                                        finalStream = nativeStream;
+                                    } else {
+                                        // Fallback: Canvas Downscaling Pipeline
+                                        const renderCanvas = document.createElement('canvas');
+                                        renderCanvas.width = 1920;
+                                        renderCanvas.height = 1080;
+                                        const ctx = renderCanvas.getContext('2d', { alpha: false });
+
+                                        media.play().catch(e => { });
+
+                                        if (media.readyState >= 2) {
+                                            try { drawAspectFitVideo(ctx, media, 1920, 1080); } catch (e) { }
+                                        }
+
+                                        const drawFrame = () => {
+                                            if (media.readyState >= 2) {
+                                                try { drawAspectFitVideo(ctx, media, 1920, 1080); } catch (e) { }
+                                            }
+                                        };
+
+                                        const drawLoop = () => {
+                                            drawFrame();
+                                            if (window.layers[layer.id]) requestAnimationFrame(drawLoop);
+                                        };
+                                        requestAnimationFrame(drawLoop);
+
+                                        const timerId = setInterval(() => {
+                                            if (!window.layers[layer.id]) { clearInterval(timerId); return; }
+                                            drawFrame();
+                                        }, 33);
+
+                                        const videoStream = renderCanvas.captureStream(30);
+                                        let audioStream;
+                                        try {
+                                            if (media.captureStream) audioStream = media.captureStream();
+                                            else if (media.mozCaptureStream) audioStream = media.mozCaptureStream();
+                                        } catch (err) { }
+
+                                        const audioTracks = audioStream ? audioStream.getAudioTracks() : [];
+                                        const videoTrack = videoStream ? videoStream.getVideoTracks()[0] : null;
+                                        if (videoTrack) {
+                                            videoTrack.enabled = true;
+                                            videoTrack.contentHint = 'motion';
+                                        }
+
+                                        const streamTracks = [];
+                                        if (videoTrack) streamTracks.push(videoTrack);
+                                        audioTracks.forEach(t => streamTracks.push(t));
+
+                                        finalStream = new MediaStream(streamTracks);
                                     }
-
-                                    const streamTracks = [];
-                                    if (videoTrack) streamTracks.push(videoTrack);
-                                    audioTracks.forEach(t => streamTracks.push(t));
-
-                                    // Merge pristine 1080p video with original audio
-                                    finalStream = new MediaStream(streamTracks);
-
                                 } else {
                                     // For Audio or Camera, just capture normally
                                     if (media.captureStream) finalStream = media.captureStream(30);
@@ -3568,6 +3575,15 @@
                     conn.on('close', () => {
                         window.hostConnections = window.hostConnections.filter(c => c !== conn);
                     });
+                }
+            });
+
+            peer.on('disconnected', () => {
+                console.warn("[Player Peer] Disconnected from signaling server. Reconnecting...");
+                if (peer && !peer.destroyed) {
+                    setTimeout(() => {
+                        try { peer.reconnect(); } catch (e) { }
+                    }, 1000);
                 }
             });
 
