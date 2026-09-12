@@ -936,6 +936,7 @@
 
         // PeerJS Config with NAT Traversal (STUN & TURN Relays) for Internet / Cross-Network Connections
         const iceServersList = [
+            // Standard Public STUN Servers
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
             { urls: 'stun:stun2.l.google.com:19302' },
@@ -944,7 +945,58 @@
             { urls: 'stun:stun.cloudflare.com:3478' },
             { urls: 'stun:global.stun.twilio.com:3478' },
             { urls: 'stun:stun.services.mozilla.com' },
-            { urls: 'stun:openrelay.metered.ca:80' },
+            { urls: 'stun:stun.nextcloud.com:443' },
+            { urls: 'stun:stun.sipgate.net:10000' },
+            { urls: 'stun:stun.voipbuster.com' },
+
+            // Metered.ca TURN & STUN Relays (UDP & TCP, ports 80 & 443 & 3478)
+            { urls: 'stun:relay.metered.ca:80' },
+            { urls: 'stun:relay.metered.ca:443' },
+            {
+                urls: "turn:relay.metered.ca:80",
+                username: "openrelayproject",
+                credential: "openrelayproject"
+            },
+            {
+                urls: "turn:relay.metered.ca:443",
+                username: "openrelayproject",
+                credential: "openrelayproject"
+            },
+            {
+                urls: "turn:relay.metered.ca:443?transport=tcp",
+                username: "openrelayproject",
+                credential: "openrelayproject"
+            },
+            {
+                urls: "turns:relay.metered.ca:443?transport=tcp",
+                username: "openrelayproject",
+                credential: "openrelayproject"
+            },
+            {
+                urls: "turns:relay.metered.ca:443",
+                username: "openrelayproject",
+                credential: "openrelayproject"
+            },
+            {
+                urls: "turn:turn.relay.metered.ca:80",
+                username: "openrelayproject",
+                credential: "openrelayproject"
+            },
+            {
+                urls: "turn:turn.relay.metered.ca:443",
+                username: "openrelayproject",
+                credential: "openrelayproject"
+            },
+            {
+                urls: "turn:turn.relay.metered.ca:443?transport=tcp",
+                username: "openrelayproject",
+                credential: "openrelayproject"
+            },
+            {
+                urls: "turns:turn.relay.metered.ca:443?transport=tcp",
+                username: "openrelayproject",
+                credential: "openrelayproject"
+            },
             {
                 urls: "turn:openrelay.metered.ca:80",
                 username: "openrelayproject",
@@ -959,16 +1011,6 @@
                 urls: "turn:openrelay.metered.ca:443?transport=tcp",
                 username: "openrelayproject",
                 credential: "openrelayproject"
-            },
-            {
-                urls: "turns:openrelay.metered.ca:443?transport=tcp",
-                username: "openrelayproject",
-                credential: "openrelayproject"
-            },
-            {
-                urls: "turns:openrelay.metered.ca:443",
-                username: "openrelayproject",
-                credential: "openrelayproject"
             }
         ];
 
@@ -976,6 +1018,9 @@
             config: {
                 iceServers: iceServersList,
                 iceCandidatePoolSize: 10,
+                iceTransportPolicy: 'all',
+                bundlePolicy: 'max-bundle',
+                rtcpMuxPolicy: 'require',
                 sdpSemantics: 'unified-plan'
             },
             iceServers: iceServersList,
@@ -1145,14 +1190,21 @@
                 const pc = call.peerConnection;
                 if (!pc || pc.connectionState === 'closed') return;
 
-                // Monitor ICE connection state and restart ICE automatically if cross-network connection drops
+                // Monitor ICE connection state and re-initiate call automatically if cross-network connection drops
                 if (!pc._iceMonitorSet) {
                     pc._iceMonitorSet = true;
                     pc.oniceconnectionstatechange = () => {
                         console.log("PeerConnection ICE State:", pc.iceConnectionState);
                         if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-                            if (typeof pc.restartIce === 'function') {
-                                try { pc.restartIce(); } catch (e) { }
+                            const layerId = call.metadata ? call.metadata.layerId : null;
+                            if (layerId && window.localStreams[layerId] && call.peer) {
+                                console.log(`[Host ICE Failure] Re-initiating call for layer ${layerId} to peer ${call.peer}`);
+                                setTimeout(() => {
+                                    if (peer && !peer.destroyed) {
+                                        const newCall = peer.call(call.peer, window.localStreams[layerId], { metadata: { layerId: layerId } });
+                                        registerMediaCall(newCall);
+                                    }
+                                }, 1000);
                             }
                         }
                     };
@@ -1441,6 +1493,13 @@
                                 if (playerFpsEl) playerFpsEl.innerText = msg.fps;
                                 const fpsMonitor = document.getElementById('fps-monitor');
                                 if (fpsMonitor) fpsMonitor.classList.remove('hidden');
+                            } else if (msg.type === 'REQUEST_STREAM_RETRY') {
+                                const layerId = msg.layerId;
+                                if (layerId && window.localStreams[layerId]) {
+                                    console.log(`[Host] Re-transmitting media stream for layer ${layerId} to peer ${conn.peer}`);
+                                    const call = peer.call(conn.peer, window.localStreams[layerId], { metadata: { layerId: layerId } });
+                                    registerMediaCall(call);
+                                }
                             }
                         }
                     });
@@ -1470,6 +1529,7 @@
 
             startMediaSyncLoop();
             startHostFPSMonitor();
+            startHostMediaHealthCheck();
             initDevices();
         }
 
@@ -1584,6 +1644,37 @@
                     if (fpsMonitor && maxHostFps > 0) fpsMonitor.classList.remove('hidden');
                 });
             }, 1000);
+        }
+
+        function startHostMediaHealthCheck() {
+            setInterval(() => {
+                if (!peer || p2pConnections.length === 0 || Object.keys(window.localStreams).length === 0) return;
+
+                p2pConnections.forEach(conn => {
+                    if (!conn.open || (conn.metadata && conn.metadata.isController)) return;
+
+                    Object.keys(window.localStreams).forEach(layerId => {
+                        const stream = window.localStreams[layerId];
+                        if (!stream) return;
+
+                        const existingCall = activeMediaCalls.find(c => c.peer === conn.peer && c.metadata && c.metadata.layerId === layerId);
+
+                        let isHealthy = false;
+                        if (existingCall && existingCall.peerConnection) {
+                            const state = existingCall.peerConnection.iceConnectionState;
+                            if (state === 'connected' || state === 'completed') {
+                                isHealthy = true;
+                            }
+                        }
+
+                        if (!isHealthy) {
+                            console.log(`[Host Health Check] Healing MediaCall for layer ${layerId} to peer ${conn.peer}`);
+                            const newCall = peer.call(conn.peer, stream, { metadata: { layerId: layerId } });
+                            registerMediaCall(newCall);
+                        }
+                    });
+                });
+            }, 3000);
         }
 
         function startMediaSyncLoop() {
@@ -2159,9 +2250,18 @@
                                     } catch (err) { }
 
                                     const audioTracks = audioStream ? audioStream.getAudioTracks() : [];
+                                    const videoTrack = videoStream ? videoStream.getVideoTracks()[0] : null;
+                                    if (videoTrack) {
+                                        videoTrack.enabled = true;
+                                        videoTrack.contentHint = 'motion';
+                                    }
+
+                                    const streamTracks = [];
+                                    if (videoTrack) streamTracks.push(videoTrack);
+                                    audioTracks.forEach(t => streamTracks.push(t));
 
                                     // Merge pristine 1080p video with original audio
-                                    finalStream = new MediaStream([videoStream.getVideoTracks()[0], ...audioTracks]);
+                                    finalStream = new MediaStream(streamTracks);
 
                                 } else {
                                     // For Audio or Camera, just capture normally
@@ -2171,12 +2271,13 @@
 
                                 if (finalStream) {
                                     finalStream.getVideoTracks().forEach(t => {
+                                        t.enabled = true;
                                         t.contentHint = 'motion';
                                     });
 
                                     window.localStreams[layer.id] = finalStream;
                                     p2pConnections.forEach(conn => {
-                                        if (conn.open) {
+                                        if (conn.open && (!conn.metadata || !conn.metadata.isController)) {
                                             const call = peer.call(conn.peer, finalStream, { metadata: { layerId: layer.id } });
                                             registerMediaCall(call);
                                         }
@@ -3290,57 +3391,68 @@
                     window.activePlayerCalls = window.activePlayerCalls || [];
                     window.activePlayerCalls.push(call);
 
-                    // ICE state change handling on player side for cross-network connections
-                    if (call.peerConnection) {
-                        call.peerConnection.oniceconnectionstatechange = () => {
-                            console.log("Player Call ICE State:", call.peerConnection.iceConnectionState);
-                            if (call.peerConnection.iceConnectionState === 'failed' || call.peerConnection.iceConnectionState === 'disconnected') {
-                                if (typeof call.peerConnection.restartIce === 'function') {
-                                    try { call.peerConnection.restartIce(); } catch (e) { }
+                    const layerId = call.metadata ? call.metadata.layerId : null;
+
+                    // Poll for call.peerConnection to monitor ICE state across cross-network links
+                    const checkPC = setInterval(() => {
+                        if (call.peerConnection) {
+                            clearInterval(checkPC);
+                            call.peerConnection.oniceconnectionstatechange = () => {
+                                console.log("Player Call ICE State:", call.peerConnection.iceConnectionState);
+                                if (call.peerConnection.iceConnectionState === 'failed' || call.peerConnection.iceConnectionState === 'disconnected') {
+                                    if (layerId && window.hostConnections) {
+                                        window.hostConnections.forEach(conn => {
+                                            if (conn.open) conn.send({ type: 'REQUEST_STREAM_RETRY', layerId: layerId });
+                                        });
+                                    }
                                 }
-                            }
-                        };
-                    }
+                            };
+                        }
+                    }, 100);
+                    setTimeout(() => clearInterval(checkPC), 5000);
 
                     call.on('close', () => {
                         window.activePlayerCalls = window.activePlayerCalls.filter(c => c !== call);
                     });
 
                     call.on('stream', remoteStream => {
-                        const layerId = call.metadata ? call.metadata.layerId : null;
                         if (!layerId) return;
 
                         window.remoteStreams = window.remoteStreams || {};
                         window.remoteStreams[layerId] = remoteStream;
 
-                        // Inject the stream into any already-existing DOM element
-                        const existingEl = document.getElementById(`play-${layerId}`);
-                        if (existingEl) {
-                            const vid = existingEl.querySelector('video, audio');
-                            if (vid) {
-                                vid.srcObject = remoteStream;
-                                vid.muted = true;
-
-                                const tryPlay = (attempt) => {
-                                    vid.play().catch(() => {
-                                        if (attempt < 10) setTimeout(() => tryPlay(attempt + 1), 400);
-                                    });
-                                };
-
-                                vid.addEventListener('playing', () => {
-                                    const layer = window.layers[layerId];
-                                    if (layer && layer.audio) {
-                                        vid.volume = layer.audio.volume;
-                                        vid.muted = layer.audio.muted;
+                        const attachStreamToVideo = () => {
+                            const existingEl = document.getElementById(`play-${layerId}`);
+                            if (existingEl) {
+                                const vid = existingEl.querySelector('video');
+                                if (vid) {
+                                    if (vid.srcObject !== remoteStream) {
+                                        vid.srcObject = remoteStream;
                                     }
-                                }, { once: true });
+                                    vid.muted = true;
+                                    vid.playsInline = true;
+                                    vid.setAttribute('playsinline', '');
+                                    vid.setAttribute('autoplay', '');
 
-                                tryPlay(0);
+                                    const tryPlay = (attempt = 0) => {
+                                        vid.play().then(() => {
+                                            const layer = window.layers[layerId];
+                                            if (layer && layer.audio) {
+                                                vid.volume = layer.audio.volume;
+                                                vid.muted = layer.audio.muted;
+                                            }
+                                        }).catch(() => {
+                                            if (attempt < 15) setTimeout(() => tryPlay(attempt + 1), 300);
+                                        });
+                                    };
+                                    tryPlay(0);
+                                }
                             }
-                        }
+                        };
 
-                        // Also call renderPlayerLayer to handle the case where DOM doesn't exist yet
+                        attachStreamToVideo();
                         renderPlayerLayer(layerId);
+                        setTimeout(attachStreamToVideo, 100);
                     });
                 });
 
@@ -3470,6 +3582,7 @@
             });
 
             startPlayerFPSMonitor();
+            startPlayerStreamHealthCheck();
         }
 
         function startPlayerFPSMonitor() {
@@ -3503,6 +3616,34 @@
                     }
                 });
             }, 1000);
+        }
+
+        function startPlayerStreamHealthCheck() {
+            setInterval(() => {
+                if (!window.hostConnections || window.hostConnections.length === 0 || !window.layers) return;
+
+                Object.keys(window.layers).forEach(layerId => {
+                    const layer = window.layers[layerId];
+                    if (!layer) return;
+
+                    if (layer.type === 'video' || layer.type === 'camera' || layer.isStreamedMedia) {
+                        const el = document.getElementById(`play-${layerId}`);
+                        const vid = el ? el.querySelector('video') : null;
+
+                        const hasStream = window.remoteStreams && window.remoteStreams[layerId] && window.remoteStreams[layerId].active;
+                        const isVideoPlaying = vid && !vid.paused && vid.readyState >= 2;
+
+                        if (!hasStream || !isVideoPlaying) {
+                            console.log(`[Player Health Check] Layer ${layerId} media non-functional. Requesting stream retry...`);
+                            window.hostConnections.forEach(conn => {
+                                if (conn.open) {
+                                    conn.send({ type: 'REQUEST_STREAM_RETRY', layerId: layerId });
+                                }
+                            });
+                        }
+                    }
+                });
+            }, 3500);
         }
 
         function renderPlayerLayer(id) {
